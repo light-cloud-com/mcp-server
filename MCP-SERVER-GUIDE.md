@@ -325,6 +325,143 @@ OUT: {"result":{"content":[{"type":"text","text":"pong"}]},"jsonrpc":"2.0","id":
 
 ---
 
+## How Users Interact with Tools
+
+After installing the MCP server, users don't need to know tool names or syntax. They just chat naturally with Claude.
+
+### Example Conversation
+
+```
+User: "ping the light cloud server"
+
+Claude: I'll check the server.
+        [Calls ping tool]
+        The server responded with "pong" - it's healthy.
+
+User: "show me my cloud instances"
+
+Claude: [Calls list-instances tool]
+        You have 3 instances:
+        - web-server (running, medium)
+        - database (running, large)
+        - dev-box (stopped, small)
+```
+
+---
+
+## Natural Language Understanding
+
+Claude understands **intent**, not keywords. Users can ask the same thing in different ways:
+
+### Same tool, different phrasings:
+
+**ping tool:**
+- "ping the server"
+- "is the server up?"
+- "check if light cloud is working"
+- "health check"
+- "is everything running?"
+
+**echo tool:**
+- "echo hello"
+- "repeat back: hello"
+- "say hello to me"
+- "mirror this message: hello"
+
+### How Claude decides which tool to use:
+
+1. Reads the tool's `name` and `description`
+2. Matches user intent to the best fitting tool
+3. Extracts parameters from the conversation
+
+```typescript
+server.tool(
+  "ping",                          // ← tool name
+  "Health check - returns pong",   // ← Claude reads this to understand purpose
+  {},
+  async () => { ... }
+);
+```
+
+### Writing better tool descriptions
+
+Better descriptions = smarter matching:
+
+```typescript
+// Vague - Claude might miss it
+server.tool("list", "List things", ...)
+
+// Clear - Claude understands when to use it
+server.tool(
+  "list-instances",
+  "List all compute instances/VMs in the Light Cloud account, showing their status, size, and configuration",
+  ...
+)
+```
+
+---
+
+## Where Does Data Come From?
+
+The **npm package** is just the delivery method (how users install it). The **answers come from wherever your tools fetch data**.
+
+### Data Flow
+
+```
+User question
+     ↓
+Claude (understands intent)
+     ↓
+MCP Server (your npm package)
+     ↓
+Your tool code decides where to get data:
+     ├── Static response (hardcoded)
+     ├── Light Cloud API (HTTP call)
+     ├── Database query
+     └── Local file system
+```
+
+### Data Source Examples
+
+**Static (no external call):**
+```typescript
+server.tool("ping", "Health check", {}, async () => {
+  return { content: [{ type: "text", text: "pong" }] };  // ← hardcoded
+});
+```
+
+**From Light Cloud API:**
+```typescript
+server.tool("list-instances", "List instances", {}, async () => {
+  const response = await fetch("https://api.lightcloud.com/instances", {
+    headers: { "Authorization": `Bearer ${process.env.API_KEY}` }
+  });
+  const data = await response.json();  // ← from Light Cloud API
+  return { content: [{ type: "text", text: JSON.stringify(data) }] };
+});
+```
+
+**From database:**
+```typescript
+server.tool("get-user", "Get user info", { id: z.string() }, async ({ id }) => {
+  const user = await db.query("SELECT * FROM users WHERE id = ?", [id]);  // ← from DB
+  return { content: [{ type: "text", text: JSON.stringify(user) }] };
+});
+```
+
+### Summary: Data Sources by Question
+
+| Question | Data Source |
+|----------|-------------|
+| "Is server healthy?" | Static "pong" (local) |
+| "List my instances" | Light Cloud API |
+| "Create a VM" | Light Cloud API |
+| "Show billing" | Light Cloud API |
+
+The MCP server is the **bridge** between Claude and external services. The npm package just delivers that bridge to users.
+
+---
+
 ## npm Scripts
 
 | Script | Command | Description |
