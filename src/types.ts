@@ -217,3 +217,70 @@ export interface UploadCompleteResponse {
   detectedOutputDirectory?: string;
   completedAt?: string;
 }
+
+// ============ Local Detection Types ============
+
+export interface LocalFrameworkDetection {
+  framework?: Framework;
+  runtime?: Runtime;
+  deploymentType: 'static' | 'container';
+  buildCommand?: string;
+  outputDirectory?: string;
+  startCommand?: string;
+  packageManager?: 'npm' | 'yarn' | 'pnpm' | 'pip' | 'poetry';
+  envFiles?: string[];
+  hasDockerfile?: boolean;
+  nodeVersion?: string;
+  pythonVersion?: string;
+}
+
+export interface LocalGitDetection {
+  hasGit: boolean;
+  remoteUrl?: string;
+  isGitHub?: boolean;
+  owner?: string;
+  repo?: string;
+  branch?: string;
+  isDirty?: boolean;
+}
+
+// ============ Package Types ============
+
+export interface PackageResult {
+  buffer: Buffer;
+  base64: string;
+  fileCount: number;
+  totalSize: number;
+  excludedCount: number;
+}
+
+// ============ Config Types ============
+
+export interface LightCloudConfig {
+  organisationId?: string;
+  applicationId?: string;
+  environmentId?: string;
+  applicationName?: string;
+  framework?: Framework;
+  deploymentType?: 'static' | 'container';
+}
+
+// ============ Formatted Output Types ============
+
+export interface FormattedEnvironmentRow {
+  name: string;
+  status: string;
+  statusEmoji: string;
+  source: string;
+  lastDeploy: string;
+  url?: string;
+}
+
+export interface FormattedApplicationRow {
+  name: string;
+  status: string;
+  statusEmoji: string;
+  type: string;
+  url?: string;
+  dashboardUrl: string;
+}

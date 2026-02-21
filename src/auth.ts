@@ -343,9 +343,9 @@ export async function refreshAccessToken(): Promise<boolean> {
     });
 
     if (response.ok) {
-      const data = await response.json() as { accessToken: string; refreshToken?: string };
+      const data = await response.json() as { token: string; refreshToken?: string };
       updateCredentials({
-        accessToken: data.accessToken,
+        accessToken: data.token,
         refreshToken: data.refreshToken || refreshToken,
       });
       return true;

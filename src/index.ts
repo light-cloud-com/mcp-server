@@ -7,6 +7,13 @@ import { ApiClient } from "./api-client.js";
 import { LightCloudApi } from "./api.js";
 import { startNonBlockingLoginFlow, logout as performLogout } from "./auth.js";
 import { isAuthenticated } from "./token-storage.js";
+import { detectLocalFramework } from "./detection/framework-detector.js";
+import { detectLocalGit } from "./detection/git-detector.js";
+import { packageSource } from "./upload/packager.js";
+import { readConfig, writeConfig } from "./config/config-manager.js";
+import { generateFormattedStatus, generateFormattedList } from "./utils/formatting.js";
+import type { LightCloudConfig } from "./types.js";
+import * as path from "path";
 
 // Create MCP server instance
 const server = new McpServer({
@@ -569,6 +576,364 @@ server.tool(
   async () => {
     const result = await getApi().getCloudRunConfig();
     return formatResponse(result);
+  }
+);
+
+// ============ Local Detection Tools ============
+
+server.tool(
+  "detect-local-framework",
+  "Detect framework and configuration from a local project directory",
+  {
+    directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
+  },
+  async ({ directory }) => {
+    try {
+      const result = detectLocalFramework(directory || process.cwd());
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error detecting framework: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+server.tool(
+  "detect-local-git",
+  "Detect Git repository information from a local project directory",
+  {
+    directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
+  },
+  async ({ directory }) => {
+    try {
+      const result = detectLocalGit(directory || process.cwd());
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error detecting git info: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// ============ Source Packaging Tool ============
+
+server.tool(
+  "package-source",
+  "Package a local project directory into a zip archive for upload",
+  {
+    directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
+  },
+  async ({ directory }) => {
+    try {
+      const result = await packageSource({ directory: directory || process.cwd() });
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            base64: result.base64,
+            fileCount: result.fileCount,
+            totalSize: result.totalSize,
+            excludedCount: result.excludedCount,
+            sizeBytes: result.buffer.length,
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error packaging source: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// ============ Upload and Deploy Workflow Tool ============
+
+server.tool(
+  "upload-and-deploy",
+  "Complete workflow to package, upload, and deploy a local project",
+  {
+    organisation_id: z.string().describe("Organization to deploy to"),
+    directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
+    application_id: z.string().optional().describe("Existing application ID to redeploy to"),
+    name: z.string().optional().describe("Application name. Defaults to folder name for new apps."),
+  },
+  async ({ organisation_id, directory, application_id, name }) => {
+    try {
+      const projectDir = directory || process.cwd();
+
+      // Step 1: Detect framework
+      const frameworkDetection = detectLocalFramework(projectDir);
+
+      // Step 2: Detect git info
+      const gitDetection = detectLocalGit(projectDir);
+
+      // Step 3: Read existing config if no application_id provided
+      let appId = application_id;
+      const existingConfig = readConfig(projectDir);
+      if (!appId && existingConfig?.applicationId) {
+        appId = existingConfig.applicationId;
+      }
+
+      // Step 4: Package source
+      const packageResult = await packageSource({ directory: projectDir });
+
+      // Step 5: Request upload URL
+      const uploadUrlResult = await getApi().requestUploadUrl({
+        targetOrganisationId: organisation_id,
+        fileName: 'source.zip',
+        contentType: 'application/zip',
+        fileSize: packageResult.buffer.length,
+      });
+
+      if (!uploadUrlResult.success || !uploadUrlResult.data) {
+        return {
+          content: [{ type: "text", text: `Error requesting upload URL: ${uploadUrlResult.error?.message || 'Unknown error'}` }],
+        };
+      }
+
+      // Step 6: Upload to GCS
+      const uploadResponse = await fetch(uploadUrlResult.data.signedUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/zip',
+        },
+        body: new Uint8Array(packageResult.buffer),
+      });
+
+      if (!uploadResponse.ok) {
+        return {
+          content: [{ type: "text", text: `Error uploading source: ${uploadResponse.statusText}` }],
+        };
+      }
+
+      // Step 7: Complete upload
+      const completeResult = await getApi().completeUpload(organisation_id, uploadUrlResult.data.uploadId, {
+        detectedFramework: frameworkDetection.framework,
+        detectedRuntime: frameworkDetection.runtime,
+        detectedDeploymentType: frameworkDetection.deploymentType,
+        detectedBuildCommand: frameworkDetection.buildCommand,
+        detectedOutputDirectory: frameworkDetection.outputDirectory,
+      });
+
+      if (!completeResult.success) {
+        return {
+          content: [{ type: "text", text: `Error completing upload: ${completeResult.error?.message || 'Unknown error'}` }],
+        };
+      }
+
+      // Step 8: Create or deploy application
+      let appResult;
+      const appName = name || path.basename(projectDir);
+
+      if (appId) {
+        // Redeploy existing application
+        appResult = await getApi().deployApplication({
+          targetOrganisationId: organisation_id,
+          applicationId: appId,
+        });
+      } else {
+        // Create new application from upload
+        appResult = await getApi().createApplicationFromUpload({
+          targetOrganisationId: organisation_id,
+          name: appName,
+          uploadId: uploadUrlResult.data.uploadId,
+          deploymentType: frameworkDetection.deploymentType,
+          framework: frameworkDetection.framework,
+          runtime: frameworkDetection.runtime,
+          buildCommand: frameworkDetection.buildCommand,
+          outputDirectory: frameworkDetection.outputDirectory,
+          startCommand: frameworkDetection.startCommand,
+        });
+      }
+
+      if (!appResult.success || !appResult.data) {
+        return {
+          content: [{ type: "text", text: `Error ${appId ? 'deploying' : 'creating'} application: ${appResult.error?.message || 'Unknown error'}` }],
+        };
+      }
+
+      // Step 9: Save config for future deployments
+      const newConfig: LightCloudConfig = {
+        organisationId: organisation_id,
+        applicationId: 'id' in appResult.data ? appResult.data.id : appId,
+        applicationName: appName,
+        framework: frameworkDetection.framework,
+        deploymentType: frameworkDetection.deploymentType,
+      };
+      writeConfig(newConfig, projectDir);
+
+      // Return success response
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            action: appId ? 'redeployed' : 'created',
+            application: appResult.data,
+            detection: {
+              framework: frameworkDetection,
+              git: gitDetection,
+            },
+            package: {
+              fileCount: packageResult.fileCount,
+              totalSize: packageResult.totalSize,
+              archiveSize: packageResult.buffer.length,
+            },
+            configSaved: true,
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error in upload-and-deploy: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// ============ Enhanced Formatting Tools ============
+
+server.tool(
+  "get-formatted-status",
+  "Get application status with enhanced formatting (markdown tables, emojis)",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    application_id: z.string().describe("The application ID to get status for"),
+  },
+  async ({ organisation_id, application_id }) => {
+    // Get application with environments
+    const appResult = await getApi().getApplication(organisation_id, application_id);
+
+    if (!appResult.success || !appResult.data) {
+      return formatResponse(appResult);
+    }
+
+    // Get environments if not included
+    let app = appResult.data;
+    if (!app.environments) {
+      const envResult = await getApi().listEnvironments(organisation_id, application_id);
+      if (envResult.success && envResult.data) {
+        app = { ...app, environments: envResult.data };
+      }
+    }
+
+    // Get organisation slug for dashboard links
+    const profileResult = await getApi().getProfile();
+    let orgSlug: string | undefined;
+    if (profileResult.success && profileResult.data) {
+      const org = profileResult.data.organisations.find(o => o.id === organisation_id);
+      orgSlug = org?.slug;
+    }
+
+    const formatted = generateFormattedStatus(app, orgSlug);
+    return {
+      content: [{ type: "text", text: formatted }],
+    };
+  }
+);
+
+server.tool(
+  "get-formatted-list",
+  "Get formatted list of all applications with markdown tables and emojis",
+  {
+    organisation_id: z.string().describe("The organization ID to list applications for"),
+  },
+  async ({ organisation_id }) => {
+    const result = await getApi().listApplications(organisation_id);
+
+    if (!result.success || !result.data) {
+      return formatResponse(result);
+    }
+
+    // Get organisation slug for dashboard links
+    const profileResult = await getApi().getProfile();
+    let orgSlug: string | undefined;
+    if (profileResult.success && profileResult.data) {
+      const org = profileResult.data.organisations.find(o => o.id === organisation_id);
+      orgSlug = org?.slug;
+    }
+
+    const formatted = generateFormattedList(result.data, orgSlug);
+    return {
+      content: [{ type: "text", text: formatted }],
+    };
+  }
+);
+
+// ============ Project Configuration Tools ============
+
+server.tool(
+  "read-project-config",
+  "Read .lightcloud config file from a project directory",
+  {
+    directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
+  },
+  async ({ directory }) => {
+    try {
+      const config = readConfig(directory || process.cwd());
+
+      if (config === null) {
+        return {
+          content: [{ type: "text", text: "No .lightcloud config file found in this directory." }],
+        };
+      }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(config, null, 2) }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error reading config: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+server.tool(
+  "write-project-config",
+  "Write/update .lightcloud config file in a project directory",
+  {
+    directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
+    organisation_id: z.string().optional().describe("Organization ID to save"),
+    application_id: z.string().optional().describe("Application ID to save"),
+    environment_id: z.string().optional().describe("Environment ID to save"),
+    application_name: z.string().optional().describe("Application name to save"),
+    framework: z.enum(["react", "nextjs", "vue", "angular", "svelte", "html", "express", "fastapi", "flask"]).optional().describe("Framework to save"),
+    deployment_type: z.enum(["static", "container"]).optional().describe("Deployment type to save"),
+  },
+  async ({ directory, organisation_id, application_id, environment_id, application_name, framework, deployment_type }) => {
+    try {
+      const config: LightCloudConfig = {};
+
+      if (organisation_id) config.organisationId = organisation_id;
+      if (application_id) config.applicationId = application_id;
+      if (environment_id) config.environmentId = environment_id;
+      if (application_name) config.applicationName = application_name;
+      if (framework) config.framework = framework;
+      if (deployment_type) config.deploymentType = deployment_type;
+
+      writeConfig(config, directory || process.cwd());
+
+      // Read back the merged config
+      const savedConfig = readConfig(directory || process.cwd());
+
+      return {
+        content: [{
+          type: "text",
+          text: `Config saved successfully.\n\n${JSON.stringify(savedConfig, null, 2)}`,
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error writing config: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
   }
 );
 
