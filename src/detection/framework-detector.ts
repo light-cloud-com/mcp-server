@@ -34,34 +34,42 @@ export function detectLocalFramework(directory: string = process.cwd()): LocalFr
   // Detect env files
   result.envFiles = detectEnvFiles(directory);
 
-  // Check for Dockerfile first (takes precedence)
   if (fileExists(directory, 'Dockerfile')) {
     result.hasDockerfile = true;
-    result.deploymentType = 'container';
   }
 
-  // Detect package manager and Node.js projects
+  // Detect package manager and Node.js projects. The package.json result wins
+  // only when it identified a real framework — a bare package.json next to
+  // requirements.txt or go.mod is tooling, not the app, so the Python/Go
+  // detector owns the result instead of partially overwriting this one.
   const packageJsonPath = path.join(directory, 'package.json');
+  let nodeFrameworkDetected = false;
   if (fs.existsSync(packageJsonPath)) {
     try {
       const packageJson: PackageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
       detectFromPackageJson(packageJson, result, directory);
+      nodeFrameworkDetected = result.framework !== undefined;
     } catch {
       // Invalid package.json, continue with other detection
     }
   }
 
-  // Detect Python projects
-  if (fileExists(directory, 'requirements.txt') || fileExists(directory, 'pyproject.toml')) {
-    detectPythonProject(directory, result);
+  if (!nodeFrameworkDetected) {
+    // Detect Python projects
+    if (fileExists(directory, 'requirements.txt') || fileExists(directory, 'pyproject.toml')) {
+      detectPythonProject(directory, result);
+    } else if (fileExists(directory, 'go.mod')) {
+      // Detect Go projects
+      result.runtime = 'go';
+      result.deploymentType = 'container';
+      result.buildCommand = 'go build -o app .';
+      result.startCommand = './app';
+    }
   }
 
-  // Detect Go projects
-  if (fileExists(directory, 'go.mod')) {
-    result.runtime = 'go';
+  // A root Dockerfile always means a container build, whatever was detected.
+  if (result.hasDockerfile) {
     result.deploymentType = 'container';
-    result.buildCommand = 'go build -o app .';
-    result.startCommand = './app';
   }
 
   return result;
@@ -116,7 +124,8 @@ function detectFromPackageJson(
     result.deploymentType = 'container';
     result.buildCommand = `${result.packageManager} run build`;
     result.startCommand = `${result.packageManager} start`;
-    result.outputDirectory = '.next';
+    // Static export output — .next is the build cache, not something to serve
+    result.outputDirectory = 'out';
   } else if (deps['react']) {
     result.framework = 'react';
     result.deploymentType = 'static';
@@ -131,13 +140,24 @@ function detectFromPackageJson(
     result.framework = 'angular';
     result.deploymentType = 'static';
     result.buildCommand = `${result.packageManager} run build`;
-    result.outputDirectory = 'dist';
+    // Angular 17+ nests the browser bundle under dist/browser
+    result.outputDirectory = 'dist/browser';
+  } else if (deps['@sveltejs/kit']) {
+    // SvelteKit ships its own Node server; plain Svelte compiles to static assets
+    result.framework = 'sveltekit';
+    result.deploymentType = 'container';
+    result.buildCommand = `${result.packageManager} run build`;
   } else if (deps['svelte']) {
     result.framework = 'svelte';
     result.deploymentType = 'static';
     result.buildCommand = `${result.packageManager} run build`;
-    result.outputDirectory = deps['@sveltejs/kit'] ? '.svelte-kit' : 'public/build';
-  } else if (deps['express'] || deps['fastify'] || deps['koa'] || deps['hapi']) {
+    result.outputDirectory = 'dist';
+  } else if (deps['fastify']) {
+    result.framework = 'fastify';
+    result.deploymentType = 'container';
+    result.buildCommand = scripts['build'] ? `${result.packageManager} run build` : undefined;
+    result.startCommand = scripts['start'] ? `${result.packageManager} start` : 'node index.js';
+  } else if (deps['express'] || deps['koa'] || deps['@hapi/hapi'] || deps['hapi']) {
     result.framework = 'express';
     result.deploymentType = 'container';
     result.buildCommand = scripts['build'] ? `${result.packageManager} run build` : undefined;
@@ -205,7 +225,8 @@ function detectPythonProject(directory: string, result: LocalFrameworkDetection)
         result.framework = 'flask';
         result.startCommand = detectFlaskStartCommand(directory);
       } else if (requirements.includes('django')) {
-        result.startCommand = 'python manage.py runserver 0.0.0.0:8080';
+        result.framework = 'django';
+        result.startCommand = 'python manage.py runserver 0.0.0.0:8000';
       }
     } catch {
       // Continue without framework detection
@@ -219,10 +240,10 @@ function detectFastApiStartCommand(directory: string): string {
   for (const entry of entryPoints) {
     if (fileExists(directory, entry)) {
       const moduleName = entry.replace('.py', '');
-      return `uvicorn ${moduleName}:app --host 0.0.0.0 --port 8080`;
+      return `uvicorn ${moduleName}:app --host 0.0.0.0 --port 8000`;
     }
   }
-  return 'uvicorn main:app --host 0.0.0.0 --port 8080';
+  return 'uvicorn main:app --host 0.0.0.0 --port 8000';
 }
 
 function detectFlaskStartCommand(directory: string): string {
@@ -230,8 +251,8 @@ function detectFlaskStartCommand(directory: string): string {
   const entryPoints = ['app.py', 'main.py', 'server.py', 'wsgi.py'];
   for (const entry of entryPoints) {
     if (fileExists(directory, entry)) {
-      return `gunicorn --bind 0.0.0.0:8080 ${entry.replace('.py', '')}:app`;
+      return `gunicorn --bind 0.0.0.0:8000 ${entry.replace('.py', '')}:app`;
     }
   }
-  return 'gunicorn --bind 0.0.0.0:8080 app:app';
+  return 'gunicorn --bind 0.0.0.0:8000 app:app';
 }

@@ -167,16 +167,17 @@ export type DeploymentStatus =
   | 'failed'
   | 'deleting';
 
-export type Framework =
-  | 'react'
-  | 'nextjs'
-  | 'vue'
-  | 'angular'
-  | 'svelte'
-  | 'html'
-  | 'express'
-  | 'fastapi'
-  | 'flask';
+/**
+ * Framework id as defined by the console-backend registry
+ * (console-backend/src/const/frameworks.ts), which is authoritative and
+ * open-ended — new ids appear there without a release here, so this is not an
+ * enforced union. Common values: react, nextjs, nuxt, sveltekit, remix, astro,
+ * vue, angular, svelte, solid, qwik, express, fastify, nestjs, hono, nodejs,
+ * django, flask, fastapi, python, gin, echo, fiber, go, springboot, quarkus,
+ * java, rails, sinatra, ruby, laravel, symfony, wordpress, php, aspnet,
+ * blazor, gatsby, docusaurus, eleventy, html, custom.
+ */
+export type Framework = string;
 
 export type Runtime =
   | 'nodejs'
