@@ -174,7 +174,7 @@ export type DeploymentStatus =
  * enforced union. Common values: react, nextjs, nuxt, sveltekit, remix, astro,
  * vue, angular, svelte, solid, qwik, express, fastify, nestjs, hono, nodejs,
  * django, flask, fastapi, python, gin, echo, fiber, go, springboot, quarkus,
- * java, rails, sinatra, ruby, laravel, symfony, wordpress, php, aspnet,
+ * java, rails, sinatra, ruby, laravel, symfony, wordpress, wasp, php, aspnet,
  * blazor, gatsby, docusaurus, eleventy, html, custom.
  */
 export type Framework = string;
