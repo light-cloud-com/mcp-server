@@ -446,10 +446,14 @@ server.tool(
 
 server.tool(
   "get-github-installation-status",
-  "Check if the Light Cloud GitHub App is installed",
-  {},
-  async () => {
-    const result = await getApi().getGitHubInstallationStatus();
+  "Check whether the Light Cloud GitHub App is installed for a repository within an organization (and can read that repository)",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    owner: z.string().describe("GitHub repository owner (user or org login)"),
+    repo: z.string().describe("GitHub repository name"),
+  },
+  async ({ organisation_id, owner, repo }) => {
+    const result = await getApi().getGitHubInstallationStatus(organisation_id, owner, repo);
     return formatResponse(result);
   }
 );

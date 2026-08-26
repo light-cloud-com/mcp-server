@@ -435,24 +435,28 @@ describe('LightCloudApi', () => {
   describe('getGitHubInstallationStatus', () => {
     it('should return installation status', async () => {
       mockClient.get.mockResolvedValue(createSuccessResponse({
+        configured: true,
         installed: true,
-        installations: [mockGitHubInstallation],
+        installationId: 123,
+        accountLogin: mockGitHubInstallation.account_name,
       }));
 
-      const result = await api.getGitHubInstallationStatus();
+      const result = await api.getGitHubInstallationStatus('org-1', 'octo', 'repo');
 
-      expect(mockClient.get).toHaveBeenCalledWith('/api/github-app/installation-status');
+      expect(mockClient.get).toHaveBeenCalledWith(
+        '/api/github-app/installation-status?organisationId=org-1&owner=octo&repo=repo'
+      );
       expect(result.success).toBe(true);
       expect(result.data?.installed).toBe(true);
     });
 
     it('should return false when not installed', async () => {
       mockClient.get.mockResolvedValue(createSuccessResponse({
+        configured: true,
         installed: false,
-        installations: [],
       }));
 
-      const result = await api.getGitHubInstallationStatus();
+      const result = await api.getGitHubInstallationStatus('org-1', 'octo', 'repo');
 
       expect(result.success).toBe(true);
       expect(result.data?.installed).toBe(false);

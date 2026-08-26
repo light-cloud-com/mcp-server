@@ -181,8 +181,21 @@ export class LightCloudApi {
     return this.client.get<{ url: string }>('/api/github-app/install');
   }
 
-  async getGitHubInstallationStatus(): Promise<ApiResponse<{ installed: boolean; installations: GitHubInstallation[] }>> {
-    return this.client.get<{ installed: boolean; installations: GitHubInstallation[] }>('/api/github-app/installation-status');
+  async getGitHubInstallationStatus(
+    organisationId: string,
+    owner: string,
+    repo: string
+  ): Promise<
+    ApiResponse<{
+      configured: boolean;
+      installed: boolean;
+      installationId?: number;
+      accountLogin?: string;
+      repoAccess?: boolean;
+    }>
+  > {
+    const params = new URLSearchParams({ organisationId, owner, repo });
+    return this.client.get(`/api/github-app/installation-status?${params.toString()}`);
   }
 
   async listGitHubInstallations(): Promise<ApiResponse<GitHubInstallation[]>> {
