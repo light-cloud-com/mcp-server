@@ -32,24 +32,23 @@ export async function login(): Promise<AuthResult> {
         const error = url.searchParams.get('error');
 
         // Send response to browser
-        res.writeHead(200, { 'Content-Type': 'text/html' });
 
         if (error) {
-          res.end(getErrorHtml(error));
+          finishInBrowser(res, 'error', error);
           server.close();
           resolve({ success: false, message: error });
           return;
         }
 
         if (returnedState !== state) {
-          res.end(getErrorHtml('Invalid state parameter. Please try again.'));
+          finishInBrowser(res, 'error', 'Invalid state parameter. Please try again.');
           server.close();
           resolve({ success: false, message: 'Invalid state parameter' });
           return;
         }
 
         if (!token) {
-          res.end(getErrorHtml('No token received. Please try again.'));
+          finishInBrowser(res, 'error', 'No token received. Please try again.');
           server.close();
           resolve({ success: false, message: 'No token received' });
           return;
@@ -61,7 +60,7 @@ export async function login(): Promise<AuthResult> {
           refreshToken: refreshToken || undefined,
         });
 
-        res.end(getSuccessHtml());
+        finishInBrowser(res, 'success');
         server.close();
         resolve({ success: true, message: 'Successfully logged in to Light Cloud!' });
       } else {
@@ -118,10 +117,9 @@ export async function startLoginFlow(): Promise<AuthResult> {
         const returnedState = url.searchParams.get('state');
         const error = url.searchParams.get('error');
 
-        res.writeHead(200, { 'Content-Type': 'text/html' });
 
         if (error) {
-          res.end(getErrorHtml(error));
+          finishInBrowser(res, 'error', error);
           if (!resolved) {
             resolved = true;
             server.close();
@@ -131,7 +129,7 @@ export async function startLoginFlow(): Promise<AuthResult> {
         }
 
         if (returnedState !== state) {
-          res.end(getErrorHtml('Invalid state parameter. Please try again.'));
+          finishInBrowser(res, 'error', 'Invalid state parameter. Please try again.');
           if (!resolved) {
             resolved = true;
             server.close();
@@ -141,7 +139,7 @@ export async function startLoginFlow(): Promise<AuthResult> {
         }
 
         if (!token) {
-          res.end(getErrorHtml('No token received. Please try again.'));
+          finishInBrowser(res, 'error', 'No token received. Please try again.');
           if (!resolved) {
             resolved = true;
             server.close();
@@ -155,7 +153,7 @@ export async function startLoginFlow(): Promise<AuthResult> {
           refreshToken: refreshToken || undefined,
         });
 
-        res.end(getSuccessHtml());
+        finishInBrowser(res, 'success');
         if (!resolved) {
           resolved = true;
           server.close();
@@ -238,24 +236,23 @@ export function startNonBlockingLoginFlow(): AuthResult {
       const returnedState = url.searchParams.get('state');
       const error = url.searchParams.get('error');
 
-      res.writeHead(200, { 'Content-Type': 'text/html' });
 
       if (error) {
-        res.end(getErrorHtml(error));
+        finishInBrowser(res, 'error', error);
         server.close();
         activeLoginServer = null;
         return;
       }
 
       if (returnedState !== state) {
-        res.end(getErrorHtml('Invalid state parameter. Please try again.'));
+        finishInBrowser(res, 'error', 'Invalid state parameter. Please try again.');
         server.close();
         activeLoginServer = null;
         return;
       }
 
       if (!token) {
-        res.end(getErrorHtml('No token received. Please try again.'));
+        finishInBrowser(res, 'error', 'No token received. Please try again.');
         server.close();
         activeLoginServer = null;
         return;
@@ -266,7 +263,7 @@ export function startNonBlockingLoginFlow(): AuthResult {
         refreshToken: refreshToken || undefined,
       });
 
-      res.end(getSuccessHtml());
+      finishInBrowser(res, 'success');
       server.close();
       activeLoginServer = null;
     } else {
@@ -378,135 +375,20 @@ function openBrowser(url: string): boolean {
   }
 }
 
-function getSuccessHtml(): string {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Light Cloud - Login Successful</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      margin: 0;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .container {
-      background: white;
-      padding: 3rem;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-      text-align: center;
-      max-width: 400px;
-    }
-    .checkmark {
-      width: 80px;
-      height: 80px;
-      border-radius: 50%;
-      background: #10b981;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      margin: 0 auto 1.5rem;
-    }
-    .checkmark svg {
-      width: 40px;
-      height: 40px;
-      fill: white;
-    }
-    h1 {
-      color: #1f2937;
-      margin: 0 0 0.5rem;
-      font-size: 1.5rem;
-    }
-    p {
-      color: #6b7280;
-      margin: 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="checkmark">
-      <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-    </div>
-    <h1>Login Successful!</h1>
-    <p>You can close this window and return to Claude.</p>
-  </div>
-</body>
-</html>`;
-}
-
-function getErrorHtml(error: string): string {
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Light Cloud - Login Failed</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      margin: 0;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    .container {
-      background: white;
-      padding: 3rem;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-      text-align: center;
-      max-width: 400px;
-    }
-    .error-icon {
-      width: 80px;
-      height: 80px;
-      border-radius: 50%;
-      background: #ef4444;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      margin: 0 auto 1.5rem;
-    }
-    .error-icon svg {
-      width: 40px;
-      height: 40px;
-      fill: white;
-    }
-    h1 {
-      color: #1f2937;
-      margin: 0 0 0.5rem;
-      font-size: 1.5rem;
-    }
-    p {
-      color: #6b7280;
-      margin: 0;
-    }
-    .error-message {
-      background: #fef2f2;
-      color: #dc2626;
-      padding: 1rem;
-      border-radius: 8px;
-      margin-top: 1rem;
-      font-size: 0.9rem;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="error-icon">
-      <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-    </div>
-    <h1>Login Failed</h1>
-    <p>There was a problem logging in to Light Cloud.</p>
-    <div class="error-message">${error}</div>
-  </div>
-</body>
-</html>`;
+/**
+ * Send the browser on to the console's closing page. The console renders
+ * every hand-off screen (CLI, MCP, VS Code, provider connections) with one
+ * component, so nothing here carries HTML or a copy of the logo.
+ */
+function finishInBrowser(
+  res: http.ServerResponse,
+  kind: 'success' | 'cancelled' | 'error',
+  message?: string
+): void {
+  const target = new URL(`${CONSOLE_URL}/auth/cli`);
+  target.searchParams.set('done', message === 'cancelled' ? 'cancelled' : kind);
+  target.searchParams.set('client', 'mcp');
+  if (message && message !== 'cancelled') target.searchParams.set('message', message);
+  res.writeHead(302, { Location: target.toString() });
+  res.end();
 }

@@ -376,7 +376,10 @@ describe('auth', () => {
         accessToken: 'access-123',
         refreshToken: 'refresh-456',
       });
-      expect(mockRes.writeHead).toHaveBeenCalledWith(200, { 'Content-Type': 'text/html' });
+      expect(mockRes.writeHead).toHaveBeenCalledWith(
+        302,
+        expect.objectContaining({ Location: expect.stringContaining('/auth/cli?done=success') })
+      );
       expect(mockServer.close).toHaveBeenCalled();
     });
 
