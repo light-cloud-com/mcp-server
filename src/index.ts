@@ -388,16 +388,42 @@ server.tool(
 
 server.tool(
   "get-environment-logs",
-  "Get logs for an environment",
+  "Get runtime logs for a backend (container) environment, newest first",
   {
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID to get logs for"),
+    hours: z.number().optional().describe("How far back to look, in hours (default 1)"),
+    limit: z.number().optional().describe("Maximum lines to return (default 100, max 500)"),
+    search: z.string().optional().describe("Only lines containing this text"),
+    revision: z.string().optional().describe("Only lines from this Cloud Run revision"),
   },
-  async ({ organisation_id, environment_id }) => {
-    const result = await getApi().getEnvironmentLogs(organisation_id, environment_id);
+  async ({ organisation_id, environment_id, hours, limit, search, revision }) => {
+    const result = await getApi().getEnvironmentLogs(organisation_id, environment_id, {
+      hours,
+      limit,
+      search,
+      revision,
+    });
     if (result.success && result.data) {
+      const lines = result.data.logs.map((entry) => {
+        const message =
+          entry.textPayload ??
+          (typeof entry.jsonPayload?.message === "string"
+            ? entry.jsonPayload.message
+            : entry.jsonPayload
+              ? JSON.stringify(entry.jsonPayload)
+              : entry.httpRequest
+                ? `${entry.httpRequest.requestMethod ?? ""} ${entry.httpRequest.requestUrl ?? ""} ${entry.httpRequest.status ?? ""}`.trim()
+                : "");
+        const tag = entry.source === "system" ? " [system]" : "";
+        const rev = entry.resource?.labels?.revision_name
+          ? ` (${entry.resource.labels.revision_name})`
+          : "";
+        return `${entry.timestamp} ${entry.severity}${tag}${rev} ${message}`;
+      });
+      const footer = result.data.hasMore ? "\n… more lines available; narrow with search, revision or hours." : "";
       return {
-        content: [{ type: "text", text: result.data.join("\n") || "No logs available" }],
+        content: [{ type: "text", text: (lines.join("\n") || "No logs in this window") + footer }],
       };
     }
     return formatResponse(result);

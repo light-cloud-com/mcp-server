@@ -20,6 +20,24 @@ import {
   PaginatedResponse,
 } from './types.js';
 
+/** Shape of POST /api/environments/logs. */
+export interface EnvironmentLogEntry {
+  timestamp: string;
+  severity: string;
+  source?: 'app' | 'request' | 'system';
+  instanceId?: string;
+  textPayload?: string;
+  jsonPayload?: Record<string, unknown>;
+  resource?: { labels?: { revision_name?: string } };
+  httpRequest?: { requestMethod?: string; requestUrl?: string; status?: number; latency?: string };
+}
+
+export interface EnvironmentLogsResponse {
+  logs: EnvironmentLogEntry[];
+  nextPageToken?: string;
+  hasMore: boolean;
+}
+
 export class LightCloudApi {
   constructor(private client: ApiClient) {}
 
@@ -152,10 +170,24 @@ export class LightCloudApi {
     });
   }
 
-  async getEnvironmentLogs(organisationId: string, environmentId: string): Promise<ApiResponse<string[]>> {
-    return this.client.post<string[]>('/api/environments/logs', {
+  async getEnvironmentLogs(
+    organisationId: string,
+    environmentId: string,
+    options: { hours?: number; limit?: number; search?: string; revision?: string } = {}
+  ): Promise<ApiResponse<EnvironmentLogsResponse>> {
+    const hours = options.hours ?? 1;
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - hours * 60 * 60 * 1000);
+    return this.client.post<EnvironmentLogsResponse>('/api/environments/logs', {
       targetOrganisationId: organisationId,
       environmentId,
+      filters: {
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString(),
+        textSearch: options.search || undefined,
+        revision: options.revision || undefined,
+        pageSize: Math.min(Math.max(options.limit ?? 100, 1), 500),
+      },
     });
   }
 

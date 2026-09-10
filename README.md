@@ -76,7 +76,7 @@ Claude: [Fetches and displays recent logs]
 | `list-environments` | List environments for an app |
 | `create-environment` | Create a new environment |
 | `deploy-environment` | Deploy to specific environment |
-| `get-environment-logs` | View environment logs |
+| `get-environment-logs` | Runtime logs, newest first; optional `hours`, `limit`, `search`, `revision` |
 | `list-repositories` | List connected GitHub repos |
 | `detect-framework` | Auto-detect project framework |
 
