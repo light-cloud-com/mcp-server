@@ -165,7 +165,7 @@ describe('LightCloudApi', () => {
         githubRepoUrl: 'https://github.com/test/container-repo',
         deploymentType: 'container',
         runtime: 'nodejs',
-        startCommand: 'npm start',
+        containerPort: 3000,
       });
 
       expect(result.success).toBe(true);
@@ -227,19 +227,19 @@ describe('LightCloudApi', () => {
       expect(result.data?.status).toBe('building');
     });
 
-    it('should trigger deployment for specific environment', async () => {
+    it('should name the fresh archive when redeploying an upload', async () => {
       mockClient.post.mockResolvedValue(createSuccessResponse(mockBuildingDeployment));
 
-      const result = await api.deployApplication({
+      await api.deployApplication({
         targetOrganisationId: 'org-123',
         applicationId: 'app-123',
-        environmentId: 'env-456',
+        uploadId: 'upload-789',
       });
 
       expect(mockClient.post).toHaveBeenCalledWith('/api/applications/deploy', {
         targetOrganisationId: 'org-123',
         applicationId: 'app-123',
-        environmentId: 'env-456',
+        uploadId: 'upload-789',
         aiSource: 'claude_code',
       });
     });
@@ -282,6 +282,7 @@ describe('LightCloudApi', () => {
 
       expect(mockClient.post).toHaveBeenCalledWith('/api/applications/detect-framework', {
         targetOrganisationId: 'org-123',
+        organisationId: 'org-123',
         owner: 'test-user',
         repo: 'test-repo',
         branch: 'main',
@@ -389,22 +390,61 @@ describe('LightCloudApi', () => {
       expect(result.success).toBe(true);
       expect(result.data).toHaveLength(5);
     });
+
+    it('should pass stream, instance and severity filters through', async () => {
+      mockClient.post.mockResolvedValue(createSuccessResponse(mockLogs));
+
+      await api.getEnvironmentLogs('org-123', 'env-123', {
+        source: 'request',
+        instanceId: 'inst-1',
+        severity: ['ERROR', 'CRITICAL'],
+        search: 'timeout',
+      });
+
+      expect(mockClient.post).toHaveBeenCalledWith('/api/environments/logs', {
+        targetOrganisationId: 'org-123',
+        environmentId: 'env-123',
+        filters: expect.objectContaining({
+          source: 'request',
+          instanceId: 'inst-1',
+          severity: ['ERROR', 'CRITICAL'],
+          textSearch: 'timeout',
+        }),
+      });
+    });
   });
 
   // ============ Deployments ============
 
   describe('listDeployments', () => {
-    it('should return list of deployments', async () => {
-      mockClient.post.mockResolvedValue(createSuccessResponse([mockDeployment, mockBuildingDeployment]));
+    it('should return a page of deployments', async () => {
+      const page = { deployments: [mockDeployment, mockBuildingDeployment], total: 2, limit: 20, offset: 0 };
+      mockClient.post.mockResolvedValue(createSuccessResponse(page));
 
       const result = await api.listDeployments('org-123', 'env-123');
 
       expect(mockClient.post).toHaveBeenCalledWith('/api/deployments', {
         targetOrganisationId: 'org-123',
         environmentId: 'env-123',
+        limit: 20,
+        offset: 0,
       });
       expect(result.success).toBe(true);
-      expect(result.data).toHaveLength(2);
+      expect(result.data?.deployments).toHaveLength(2);
+      expect(result.data?.total).toBe(2);
+    });
+
+    it('should clamp the page size to the backend cap', async () => {
+      mockClient.post.mockResolvedValue(createSuccessResponse({ deployments: [], total: 0, limit: 20, offset: 40 }));
+
+      await api.listDeployments('org-123', 'env-123', { limit: 100, offset: 40 });
+
+      expect(mockClient.post).toHaveBeenCalledWith('/api/deployments', {
+        targetOrganisationId: 'org-123',
+        environmentId: 'env-123',
+        limit: 20,
+        offset: 40,
+      });
     });
   });
 

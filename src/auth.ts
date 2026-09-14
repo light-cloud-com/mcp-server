@@ -82,7 +82,7 @@ export async function login(): Promise<AuthResult> {
 
     server.listen(port, '127.0.0.1', () => {
       const callbackUrl = `http://localhost:${port}/callback`;
-      const authUrl = `${CONSOLE_URL}/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
+      const authUrl = `${CONSOLE_URL}/auth/cli?client=mcp&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
 
       // Return the URL for the user to open
       resolve({
@@ -181,7 +181,7 @@ export async function startLoginFlow(): Promise<AuthResult> {
 
     server.listen(port, '127.0.0.1', () => {
       const callbackUrl = `http://localhost:${port}/callback`;
-      const authUrl = `${CONSOLE_URL}/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
+      const authUrl = `${CONSOLE_URL}/auth/cli?client=mcp&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
 
       // Try to open browser automatically
       openBrowser(authUrl);
@@ -205,7 +205,7 @@ export function getLoginUrl(): string {
   const state = crypto.randomBytes(16).toString('hex');
   const port = 19836;
   const callbackUrl = `http://localhost:${port}/callback`;
-  return `${CONSOLE_URL}/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
+  return `${CONSOLE_URL}/auth/cli?client=mcp&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
 }
 
 // Track active login server
@@ -225,7 +225,7 @@ export function startNonBlockingLoginFlow(): AuthResult {
   const state = crypto.randomBytes(16).toString('hex');
   const port = 19836;
   const callbackUrl = `http://localhost:${port}/callback`;
-  const authUrl = `${CONSOLE_URL}/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
+  const authUrl = `${CONSOLE_URL}/auth/cli?client=mcp&callback=${encodeURIComponent(callbackUrl)}&state=${state}`;
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`);

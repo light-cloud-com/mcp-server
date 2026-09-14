@@ -17,14 +17,38 @@ import {
   UploadRequestUrlResponse,
   UploadCompleteResponse,
   DetectedProject,
+  DeploymentListResponse,
   PaginatedResponse,
 } from './types.js';
+
+export type LogSource = 'app' | 'request' | 'system';
+
+export type LogSeverity =
+  | 'DEFAULT'
+  | 'DEBUG'
+  | 'INFO'
+  | 'NOTICE'
+  | 'WARNING'
+  | 'ERROR'
+  | 'CRITICAL'
+  | 'ALERT'
+  | 'EMERGENCY';
+
+export interface EnvironmentLogOptions {
+  hours?: number;
+  limit?: number;
+  search?: string;
+  revision?: string;
+  instanceId?: string;
+  source?: LogSource;
+  severity?: LogSeverity[];
+}
 
 /** Shape of POST /api/environments/logs. */
 export interface EnvironmentLogEntry {
   timestamp: string;
   severity: string;
-  source?: 'app' | 'request' | 'system';
+  source?: LogSource;
   instanceId?: string;
   textPayload?: string;
   jsonPayload?: Record<string, unknown>;
@@ -89,8 +113,9 @@ export class LightCloudApi {
     });
   }
 
-  async deployApplication(request: DeployRequest): Promise<ApiResponse<Deployment>> {
-    return this.client.post<Deployment>('/api/applications/deploy', {
+  /** Redeploys the production environment; the backend answers with the application. */
+  async deployApplication(request: DeployRequest): Promise<ApiResponse<Application>> {
+    return this.client.post<Application>('/api/applications/deploy', {
       ...request,
       aiSource: 'claude_code',
     });
@@ -116,8 +141,12 @@ export class LightCloudApi {
     repo: string,
     branch: string
   ): Promise<ApiResponse<DetectedProject>> {
+    // The backend reads `organisationId` here (it resolves the org's GitHub
+    // installation for private repos); `targetOrganisationId` is kept for the
+    // shared permission middleware.
     return this.client.post<DetectedProject>('/api/applications/detect-framework', {
       targetOrganisationId: organisationId,
+      organisationId,
       owner,
       repo,
       branch,
@@ -155,8 +184,9 @@ export class LightCloudApi {
     });
   }
 
-  async deployEnvironment(organisationId: string, environmentId: string): Promise<ApiResponse<Deployment>> {
-    return this.client.post<Deployment>('/api/environments/deploy', {
+  /** The backend answers with the environment, not a deployment record. */
+  async deployEnvironment(organisationId: string, environmentId: string): Promise<ApiResponse<Environment>> {
+    return this.client.post<Environment>('/api/environments/deploy', {
       targetOrganisationId: organisationId,
       environmentId,
       aiSource: 'claude_code',
@@ -173,7 +203,7 @@ export class LightCloudApi {
   async getEnvironmentLogs(
     organisationId: string,
     environmentId: string,
-    options: { hours?: number; limit?: number; search?: string; revision?: string } = {}
+    options: EnvironmentLogOptions = {}
   ): Promise<ApiResponse<EnvironmentLogsResponse>> {
     const hours = options.hours ?? 1;
     const endTime = new Date();
@@ -186,6 +216,9 @@ export class LightCloudApi {
         endTime: endTime.toISOString(),
         textSearch: options.search || undefined,
         revision: options.revision || undefined,
+        instanceId: options.instanceId || undefined,
+        source: options.source,
+        severity: options.severity?.length ? options.severity : undefined,
         pageSize: Math.min(Math.max(options.limit ?? 100, 1), 500),
       },
     });
@@ -193,10 +226,17 @@ export class LightCloudApi {
 
   // ============ Deployments ============
 
-  async listDeployments(organisationId: string, environmentId: string): Promise<ApiResponse<Deployment[]>> {
-    return this.client.post<Deployment[]>('/api/deployments', {
+  /** Newest first; the backend caps a page at 20. */
+  async listDeployments(
+    organisationId: string,
+    environmentId: string,
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<ApiResponse<DeploymentListResponse>> {
+    return this.client.post<DeploymentListResponse>('/api/deployments', {
       targetOrganisationId: organisationId,
       environmentId,
+      limit: Math.min(Math.max(options.limit ?? 20, 1), 20),
+      offset: Math.max(options.offset ?? 0, 0),
     });
   }
 

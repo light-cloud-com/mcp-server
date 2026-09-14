@@ -178,45 +178,66 @@ server.tool(
 
 server.tool(
   "create-application",
-  "Create a new application from a GitHub repository",
+  "Create a new application from a GitHub, GitLab or Bitbucket repository",
   {
     organisation_id: z.string().describe("The organization ID to create the application in"),
     name: z.string().describe("The name for the new application"),
-    github_repo_url: z.string().describe("The GitHub repository URL (e.g., https://github.com/owner/repo)"),
+    github_repo_url: z.string().describe("The repository URL (e.g., https://github.com/owner/repo, https://gitlab.com/group/project, https://bitbucket.org/workspace/repo). The provider is inferred from the host."),
     github_branch: z.string().optional().describe("The branch to deploy from (defaults to main/master)"),
+    git_provider: z.enum(["github", "gitlab", "bitbucket"]).optional().describe("Force the git provider; needed for self-hosted GitLab where the URL host is not gitlab.com"),
+    gitlab_project_id: z.string().optional().describe("GitLab project id or full path (self-hosted GitLab)"),
+    bitbucket_repo_uuid: z.string().optional().describe("Bitbucket repository UUID, when known"),
+    root_directory: z.string().optional().describe("Repo-relative folder to build from, for monorepos (e.g., 'apps/web')"),
     deployment_type: z.enum(["static", "container"]).describe("Deployment type: 'static' for static sites, 'container' for server applications"),
     framework: z.string().optional().describe("The framework id, validated by the backend registry. Common values: react, nextjs, nuxt, sveltekit, remix, astro, vue, angular, svelte, express, fastify, nestjs, django, flask, fastapi, gin, springboot, rails, laravel, html"),
     runtime: z.enum(["nodejs", "python", "go", "java", "ruby", "php", "dotnet", "custom"]).optional().describe("The runtime environment"),
     build_command: z.string().optional().describe("Custom build command (e.g., 'npm run build')"),
     output_directory: z.string().optional().describe("Build output directory (e.g., 'dist', 'build')"),
-    start_command: z.string().optional().describe("Start command for container apps (e.g., 'npm start')"),
     environment_vars: z.record(z.string(), z.string()).optional().describe("Environment variables as key-value pairs"),
+    container_port: z.number().int().optional().describe("Port the container listens on (container apps)"),
+    min_instances: z.number().int().min(0).optional().describe("Minimum running instances; 0 scales to zero when idle (container apps)"),
+    max_instances: z.number().int().min(1).optional().describe("Maximum instances (container apps)"),
+    auto_deploy_on_push: z.boolean().optional().describe("Redeploy automatically on every push to the deployed branch"),
   },
   async ({
     organisation_id,
     name,
     github_repo_url,
     github_branch,
+    git_provider,
+    gitlab_project_id,
+    bitbucket_repo_uuid,
+    root_directory,
     deployment_type,
     framework,
     runtime,
     build_command,
     output_directory,
-    start_command,
     environment_vars,
+    container_port,
+    min_instances,
+    max_instances,
+    auto_deploy_on_push,
   }) => {
     const result = await getApi().createApplication({
       targetOrganisationId: organisation_id,
       name,
       githubRepoUrl: github_repo_url,
       githubBranch: github_branch,
+      gitProvider: git_provider,
+      gitlabProjectId: gitlab_project_id,
+      bitbucketRepoUuid: bitbucket_repo_uuid,
+      rootDirectory: root_directory,
       deploymentType: deployment_type,
       framework,
       runtime,
       buildCommand: build_command,
       outputDirectory: output_directory,
-      startCommand: start_command,
       environmentVars: environment_vars as Record<string, string> | undefined,
+      containerPort: container_port,
+      minInstances: min_instances,
+      maxInstances: max_instances,
+      autoDeployOnPush: auto_deploy_on_push,
     });
     return formatResponse(result);
   }
@@ -234,7 +255,6 @@ server.tool(
     runtime: z.enum(["nodejs", "python", "go", "java", "ruby", "php", "dotnet", "custom"]).optional().describe("The runtime environment"),
     build_command: z.string().optional().describe("Custom build command"),
     output_directory: z.string().optional().describe("Build output directory"),
-    start_command: z.string().optional().describe("Start command for container apps"),
     environment_vars: z.record(z.string(), z.string()).optional().describe("Environment variables as key-value pairs"),
   },
   async ({
@@ -246,7 +266,6 @@ server.tool(
     runtime,
     build_command,
     output_directory,
-    start_command,
     environment_vars,
   }) => {
     const result = await getApi().createApplicationFromUpload({
@@ -258,7 +277,6 @@ server.tool(
       runtime,
       buildCommand: build_command,
       outputDirectory: output_directory,
-      startCommand: start_command,
       environmentVars: environment_vars as Record<string, string> | undefined,
     });
     return formatResponse(result);
@@ -267,17 +285,26 @@ server.tool(
 
 server.tool(
   "deploy-application",
-  "Trigger a new deployment for an application",
+  "Trigger a new deployment. Without environment_id the production environment is rebuilt; with it, that environment is deployed instead.",
   {
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID to deploy"),
-    environment_id: z.string().optional().describe("Specific environment ID to deploy (optional)"),
+    environment_id: z.string().optional().describe("Deploy this environment instead of production"),
+    upload_id: z.string().optional().describe("Completed upload ID holding the new source archive (upload-based apps). Without it the archive the app was created from is rebuilt."),
   },
-  async ({ organisation_id, application_id, environment_id }) => {
+  async ({ organisation_id, application_id, environment_id, upload_id }) => {
+    if (environment_id) {
+      if (upload_id) {
+        return {
+          content: [{ type: "text", text: "Error: upload_id applies to the whole application; omit environment_id to redeploy a new archive." }],
+        };
+      }
+      return formatResponse(await getApi().deployEnvironment(organisation_id, environment_id));
+    }
     const result = await getApi().deployApplication({
       targetOrganisationId: organisation_id,
       applicationId: application_id,
-      environmentId: environment_id,
+      uploadId: upload_id,
     });
     return formatResponse(result);
   }
@@ -396,13 +423,19 @@ server.tool(
     limit: z.number().optional().describe("Maximum lines to return (default 100, max 500)"),
     search: z.string().optional().describe("Only lines containing this text"),
     revision: z.string().optional().describe("Only lines from this Cloud Run revision"),
+    instance_id: z.string().optional().describe("Only lines from this container instance"),
+    source: z.enum(["app", "request", "system"]).optional().describe("Log stream: 'app' (stdout/stderr), 'request' (HTTP access log), 'system' (platform). Default: all"),
+    severity: z.array(z.enum(["DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"])).optional().describe("Only these severities"),
   },
-  async ({ organisation_id, environment_id, hours, limit, search, revision }) => {
+  async ({ organisation_id, environment_id, hours, limit, search, revision, instance_id, source, severity }) => {
     const result = await getApi().getEnvironmentLogs(organisation_id, environment_id, {
       hours,
       limit,
       search,
       revision,
+      instanceId: instance_id,
+      source,
+      severity,
     });
     if (result.success && result.data) {
       const lines = result.data.logs.map((entry) => {
@@ -421,7 +454,7 @@ server.tool(
           : "";
         return `${entry.timestamp} ${entry.severity}${tag}${rev} ${message}`;
       });
-      const footer = result.data.hasMore ? "\n… more lines available; narrow with search, revision or hours." : "";
+      const footer = result.data.hasMore ? "\n… more lines available; narrow with search, revision, source, severity or hours." : "";
       return {
         content: [{ type: "text", text: (lines.join("\n") || "No logs in this window") + footer }],
       };
@@ -438,9 +471,11 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID to list deployments for"),
+    limit: z.number().int().optional().describe("Page size (default 20, max 20)"),
+    offset: z.number().int().optional().describe("Skip this many, newest first (default 0)"),
   },
-  async ({ organisation_id, environment_id }) => {
-    const result = await getApi().listDeployments(organisation_id, environment_id);
+  async ({ organisation_id, environment_id, limit, offset }) => {
+    const result = await getApi().listDeployments(organisation_id, environment_id, { limit, offset });
     return formatResponse(result);
   }
 );
@@ -762,10 +797,12 @@ server.tool(
       const appName = name || path.basename(projectDir);
 
       if (appId) {
-        // Redeploy existing application
+        // Redeploy existing application from the archive just uploaded —
+        // without uploadId the backend rebuilds the original one.
         appResult = await getApi().deployApplication({
           targetOrganisationId: organisation_id,
           applicationId: appId,
+          uploadId: uploadUrlResult.data.uploadId,
         });
       } else {
         // Create new application from upload
@@ -778,7 +815,6 @@ server.tool(
           runtime: frameworkDetection.runtime,
           buildCommand: frameworkDetection.buildCommand,
           outputDirectory: frameworkDetection.outputDirectory,
-          startCommand: frameworkDetection.startCommand,
         });
       }
 

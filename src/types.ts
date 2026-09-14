@@ -2,6 +2,14 @@
 
 // ============ Request Types ============
 
+export type GitProvider = 'github' | 'gitlab' | 'bitbucket';
+
+/**
+ * Body of POST /api/applications/create. Field names follow the backend
+ * (console-backend/src/routes/applications/createApplication.ts): the repo URL
+ * is always `githubRepoUrl` whatever the provider, and the provider is
+ * inferred from the URL host when `gitProvider` is omitted.
+ */
 export interface CreateApplicationRequest {
   targetOrganisationId: string;
   name: string;
@@ -9,17 +17,26 @@ export interface CreateApplicationRequest {
   githubRepoUrl: string;
   githubBranch?: string;
   isPrivate?: boolean;
+  gitProvider?: GitProvider;
+  /** GitLab project id or path; needed for self-hosted GitLab. */
+  gitlabProjectId?: string;
+  bitbucketRepoUuid?: string;
+  /** Repo-relative folder to build from (monorepos). */
+  rootDirectory?: string;
   deploymentType: 'static' | 'container';
   framework?: Framework;
   runtime?: Runtime;
   buildCommand?: string;
   outputDirectory?: string;
-  startCommand?: string;
   environmentVars?: Record<string, string>;
   containerPort?: number;
   memory?: string;
   cpu?: string;
+  minInstances?: number;
+  maxInstances?: number;
   region?: string;
+  autoDeployOnPush?: boolean;
+  autoDeployBranches?: string[];
 }
 
 export interface CreateApplicationFromUploadRequest {
@@ -32,7 +49,6 @@ export interface CreateApplicationFromUploadRequest {
   runtime?: Runtime;
   buildCommand?: string;
   outputDirectory?: string;
-  startCommand?: string;
   environmentVars?: Record<string, string>;
 }
 
@@ -43,10 +59,16 @@ export interface UploadRequestUrlRequest {
   fileSize?: number;
 }
 
+/**
+ * Body of POST /api/applications/deploy. Redeploys the production environment;
+ * a specific environment goes through /api/environments/deploy instead.
+ * `uploadId` names a freshly uploaded archive — without it the backend rebuilds
+ * the archive the application was created from.
+ */
 export interface DeployRequest {
   targetOrganisationId: string;
   applicationId: string;
-  environmentId?: string;
+  uploadId?: string;
 }
 
 // ============ Response Types ============
@@ -66,6 +88,14 @@ export interface UploadRequestUrlResponse {
   gcsPath: string;
   expiresAt: string;
   maxSize: number;
+}
+
+/** Body of POST /api/deployments — a page of an environment's history. */
+export interface DeploymentListResponse {
+  deployments: Deployment[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface PaginatedResponse<T> {
