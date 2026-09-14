@@ -117,7 +117,7 @@ describe('auth', () => {
         ok: true,
         status: 200,
         json: async () => ({
-          accessToken: 'new-access-token',
+          token: 'new-access-token',
           refreshToken: 'new-refresh-token',
         }),
       });
@@ -179,7 +179,7 @@ describe('auth', () => {
         ok: true,
         status: 200,
         json: async () => ({
-          accessToken: 'new-access-token',
+          token: 'new-access-token',
           // No new refreshToken
         }),
       });

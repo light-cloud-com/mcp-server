@@ -380,6 +380,11 @@ describe('LightCloudApi', () => {
       expect(mockClient.post).toHaveBeenCalledWith('/api/environments/logs', {
         targetOrganisationId: 'org-123',
         environmentId: 'env-123',
+        filters: expect.objectContaining({
+          startTime: expect.any(String),
+          endTime: expect.any(String),
+          pageSize: 100,
+        }),
       });
       expect(result.success).toBe(true);
       expect(result.data).toHaveLength(5);
