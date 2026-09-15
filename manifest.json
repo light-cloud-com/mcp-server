@@ -220,7 +220,7 @@
   ],
   "license": "MIT",
   "privacy_policies": [
-    "https://www.light-cloud.com/privacy"
+    "https://www.light-cloud.com/legal/privacy-policy"
   ],
   "compatibility": {
     "claude_desktop": ">=0.10.0",

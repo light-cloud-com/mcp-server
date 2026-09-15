@@ -87,9 +87,71 @@ function formatResponse(result: { success: boolean; data?: unknown; error?: { co
   return text(formatError(result.error));
 }
 
+// Tool annotations (MCP spec): what a host may assume before calling.
+// readOnlyHint: no state change. destructiveHint: irreversible. openWorldHint:
+// talks to the Light Cloud API (all of them) — set once here so no tool
+// registers without them.
+const ANNOTATIONS: Record<string, { title: string; readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }> = {
+  "ping": { title: "Ping", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "login": { title: "Login", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "logout": { title: "Logout", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  "connect": { title: "Connect", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "connect-status": { title: "Connect status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "whoami": { title: "Whoami", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-profile": { title: "Get profile", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-applications": { title: "List applications", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-application": { title: "Get application", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-application-status": { title: "Get application status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "create-application": { title: "Create application", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "create-application-from-upload": { title: "Create application from upload", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "deploy-application": { title: "Deploy application", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "delete-application": { title: "Delete application", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  "detect-framework": { title: "Detect framework", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-environments": { title: "List environments", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-environment": { title: "Get environment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "create-environment": { title: "Create environment", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "deploy-environment": { title: "Deploy environment", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "delete-environment": { title: "Delete environment", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  "get-environment-logs": { title: "Get environment logs", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-deployments": { title: "List deployments", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-deployment": { title: "Get deployment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-github-install-url": { title: "Get GitHub install URL", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-github-installation-status": { title: "Get GitHub installation status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-github-installations": { title: "List GitHub installations", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-repositories": { title: "List repositories", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-branches": { title: "List branches", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "check-repo-access": { title: "Check repo access", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "request-upload-url": { title: "Request upload URL", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "complete-upload": { title: "Complete upload", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "get-platform-config": { title: "Get platform config", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-cloudrun-config": { title: "Get Cloud Run config", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "detect-local-framework": { title: "Detect local framework", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "detect-local-git": { title: "Detect local git", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "package-source": { title: "Package source", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "upload-and-deploy": { title: "Upload and deploy", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "get-formatted-status": { title: "Get formatted status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-formatted-list": { title: "Get formatted list", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "read-project-config": { title: "Read project config", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "write-project-config": { title: "Write project config", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-billing": { title: "Get billing", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-plans": { title: "List plans", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "choose-plan": { title: "Choose plan", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "add-payment-method": { title: "Add payment method", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "payment-method-status": { title: "Payment method status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "list-databases": { title: "List databases", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-database": { title: "Get database", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "create-database": { title: "Create database", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "get-database-connection-string": { title: "Get database connection string", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "set-environment-variables": { title: "Set environment variables", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-environment-variables": { title: "Get environment variables", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "set-scaling": { title: "Set scaling", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "add-custom-domain": { title: "Add custom domain", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "get-custom-domain-status": { title: "Get custom domain status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+};
+
 // ============ Health Check ============
 
-server.tool("ping", "Health check - returns pong", {}, async () => {
+server.tool("ping", "Health check - returns pong", {}, ANNOTATIONS["ping"], async () => {
   return { content: [{ type: "text", text: "pong" }] };
 });
 
@@ -99,6 +161,7 @@ server.tool(
   "login",
   "Sign in to Light Cloud through a browser on THIS machine (loopback callback). Prefer `connect` — it works without a local browser and also creates the account for a new email.",
   {},
+  ANNOTATIONS["login"],
   async () => {
     if (isAuthenticated()) {
       // Already logged in, verify token is valid
@@ -124,6 +187,7 @@ server.tool(
   "logout",
   "Sign out of Light Cloud",
   {},
+  ANNOTATIONS["logout"],
   async () => {
     const result = performLogout();
     return {
@@ -141,6 +205,7 @@ server.tool(
   {
     email: z.string().describe("The email address to sign in (or sign up) with"),
   },
+  ANNOTATIONS["connect"],
   async ({ email }) => {
     if (isAuthenticated()) {
       const result = await getApi().getProfile();
@@ -159,6 +224,7 @@ server.tool(
   "Wait for a pending `connect` sign-in to be approved (up to ~45 seconds per call). " +
   "Call again while it reports pending. Returns the signed-in account once approved.",
   {},
+  ANNOTATIONS["connect-status"],
   async () => {
     const state = await waitForConnect(45_000);
     switch (state.phase) {
@@ -194,6 +260,7 @@ server.tool(
   "whoami",
   "Check authentication status and show current user",
   {},
+  ANNOTATIONS["whoami"],
   async () => {
     if (!isAuthenticated()) {
       const pending = getConnectState();
@@ -228,6 +295,7 @@ server.tool(
   "get-profile",
   "Get the current user profile and list of organizations",
   {},
+  ANNOTATIONS["get-profile"],
   async () => {
     const result = await getApi().getProfile();
     return formatResponse(result);
@@ -242,6 +310,7 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID to list applications for"),
   },
+  ANNOTATIONS["list-applications"],
   async ({ organisation_id }) => {
     const result = await getApi().listApplications(organisation_id);
     return formatResponse(result);
@@ -255,6 +324,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID to get details for"),
   },
+  ANNOTATIONS["get-application"],
   async ({ organisation_id, application_id }) => {
     const result = await getApi().getApplication(organisation_id, application_id);
     return formatResponse(result);
@@ -268,6 +338,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID to get status for"),
   },
+  ANNOTATIONS["get-application-status"],
   async ({ organisation_id, application_id }) => {
     const result = await getApi().getApplicationStatus(organisation_id, application_id);
     return formatResponse(result);
@@ -297,6 +368,7 @@ server.tool(
     max_instances: z.number().int().min(1).optional().describe("Maximum instances (container apps)"),
     auto_deploy_on_push: z.boolean().optional().describe("Redeploy automatically on every push to the deployed branch"),
   },
+  ANNOTATIONS["create-application"],
   async ({
     organisation_id,
     name,
@@ -355,6 +427,7 @@ server.tool(
     output_directory: z.string().optional().describe("Build output directory"),
     environment_vars: z.record(z.string(), z.string()).optional().describe("Environment variables as key-value pairs"),
   },
+  ANNOTATIONS["create-application-from-upload"],
   async ({
     organisation_id,
     name,
@@ -390,6 +463,7 @@ server.tool(
     environment_id: z.string().optional().describe("Deploy this environment instead of production"),
     upload_id: z.string().optional().describe("Completed upload ID holding the new source archive (upload-based apps). Without it the archive the app was created from is rebuilt."),
   },
+  ANNOTATIONS["deploy-application"],
   async ({ organisation_id, application_id, environment_id, upload_id }) => {
     if (environment_id) {
       if (upload_id) {
@@ -415,6 +489,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID to delete"),
   },
+  ANNOTATIONS["delete-application"],
   async ({ organisation_id, application_id }) => {
     const result = await getApi().deleteApplication(organisation_id, application_id);
     if (result.success) {
@@ -433,6 +508,7 @@ server.tool(
     repo: z.string().describe("GitHub repository name"),
     branch: z.string().describe("Branch to analyze"),
   },
+  ANNOTATIONS["detect-framework"],
   async ({ organisation_id, owner, repo, branch }) => {
     const result = await getApi().detectFramework(organisation_id, owner, repo, branch);
     return formatResponse(result);
@@ -448,6 +524,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID to list environments for"),
   },
+  ANNOTATIONS["list-environments"],
   async ({ organisation_id, application_id }) => {
     const result = await getApi().listEnvironments(organisation_id, application_id);
     return formatResponse(result);
@@ -461,6 +538,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID to get details for"),
   },
+  ANNOTATIONS["get-environment"],
   async ({ organisation_id, environment_id }) => {
     const result = await getApi().getEnvironment(organisation_id, environment_id);
     return formatResponse(result);
@@ -476,6 +554,7 @@ server.tool(
     name: z.string().describe("Name for the new environment (e.g., 'staging', 'preview')"),
     branch: z.string().describe("Git branch to deploy for this environment"),
   },
+  ANNOTATIONS["create-environment"],
   async ({ organisation_id, application_id, name, branch }) => {
     const result = await getApi().createEnvironment(organisation_id, application_id, name, branch);
     return formatResponse(result);
@@ -489,6 +568,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID to deploy"),
   },
+  ANNOTATIONS["deploy-environment"],
   async ({ organisation_id, environment_id }) => {
     const result = await getApi().deployEnvironment(organisation_id, environment_id);
     return formatResponse(result);
@@ -502,6 +582,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID to delete"),
   },
+  ANNOTATIONS["delete-environment"],
   async ({ organisation_id, environment_id }) => {
     const result = await getApi().deleteEnvironment(organisation_id, environment_id);
     if (result.success) {
@@ -525,6 +606,7 @@ server.tool(
     source: z.enum(["app", "request", "system"]).optional().describe("Log stream: 'app' (stdout/stderr), 'request' (HTTP access log), 'system' (platform). Default: all"),
     severity: z.array(z.enum(["DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"])).optional().describe("Only these severities"),
   },
+  ANNOTATIONS["get-environment-logs"],
   async ({ organisation_id, environment_id, hours, limit, search, revision, instance_id, source, severity }) => {
     const result = await getApi().getEnvironmentLogs(organisation_id, environment_id, {
       hours,
@@ -572,6 +654,7 @@ server.tool(
     limit: z.number().int().optional().describe("Page size (default 20, max 20)"),
     offset: z.number().int().optional().describe("Skip this many, newest first (default 0)"),
   },
+  ANNOTATIONS["list-deployments"],
   async ({ organisation_id, environment_id, limit, offset }) => {
     const result = await getApi().listDeployments(organisation_id, environment_id, { limit, offset });
     return formatResponse(result);
@@ -585,6 +668,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     deployment_id: z.string().describe("The deployment ID to get details for"),
   },
+  ANNOTATIONS["get-deployment"],
   async ({ organisation_id, deployment_id }) => {
     const result = await getApi().getDeployment(organisation_id, deployment_id);
     return formatResponse(result);
@@ -597,6 +681,7 @@ server.tool(
   "get-github-install-url",
   "Get the URL to install the Light Cloud GitHub App",
   {},
+  ANNOTATIONS["get-github-install-url"],
   async () => {
     const result = await getApi().getGitHubInstallUrl();
     return formatResponse(result);
@@ -611,6 +696,7 @@ server.tool(
     owner: z.string().describe("GitHub repository owner (user or org login)"),
     repo: z.string().describe("GitHub repository name"),
   },
+  ANNOTATIONS["get-github-installation-status"],
   async ({ organisation_id, owner, repo }) => {
     const result = await getApi().getGitHubInstallationStatus(organisation_id, owner, repo);
     return formatResponse(result);
@@ -621,6 +707,7 @@ server.tool(
   "list-github-installations",
   "List all GitHub App installations",
   {},
+  ANNOTATIONS["list-github-installations"],
   async () => {
     const result = await getApi().listGitHubInstallations();
     return formatResponse(result);
@@ -633,6 +720,7 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID"),
   },
+  ANNOTATIONS["list-repositories"],
   async ({ organisation_id }) => {
     const result = await getApi().listRepositories(organisation_id);
     return formatResponse(result);
@@ -647,6 +735,7 @@ server.tool(
     owner: z.string().describe("GitHub repository owner"),
     repo: z.string().describe("GitHub repository name"),
   },
+  ANNOTATIONS["list-branches"],
   async ({ organisation_id, owner, repo }) => {
     const result = await getApi().listBranches(organisation_id, owner, repo);
     return formatResponse(result);
@@ -660,6 +749,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     account_logins: z.array(z.string()).describe("List of GitHub account logins to check"),
   },
+  ANNOTATIONS["check-repo-access"],
   async ({ organisation_id, account_logins }) => {
     const result = await getApi().checkRepoAccess(organisation_id, account_logins);
     return formatResponse(result);
@@ -677,6 +767,7 @@ server.tool(
     content_type: z.string().optional().describe("MIME type of the file (default: application/zip)"),
     file_size: z.number().optional().describe("Size of the file in bytes"),
   },
+  ANNOTATIONS["request-upload-url"],
   async ({ organisation_id, file_name, content_type, file_size }) => {
     const result = await getApi().requestUploadUrl({
       targetOrganisationId: organisation_id,
@@ -700,6 +791,7 @@ server.tool(
     detected_build_command: z.string().optional().describe("Detected build command"),
     detected_output_directory: z.string().optional().describe("Detected output directory"),
   },
+  ANNOTATIONS["complete-upload"],
   async ({
     organisation_id,
     upload_id,
@@ -726,6 +818,7 @@ server.tool(
   "get-platform-config",
   "Get Light Cloud platform configuration",
   {},
+  ANNOTATIONS["get-platform-config"],
   async () => {
     const result = await getApi().getPlatformConfig();
     return formatResponse(result);
@@ -736,6 +829,7 @@ server.tool(
   "get-cloudrun-config",
   "Get Cloud Run configuration options",
   {},
+  ANNOTATIONS["get-cloudrun-config"],
   async () => {
     const result = await getApi().getCloudRunConfig();
     return formatResponse(result);
@@ -750,6 +844,7 @@ server.tool(
   {
     directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
   },
+  ANNOTATIONS["detect-local-framework"],
   async ({ directory }) => {
     try {
       const result = detectLocalFramework(directory || process.cwd());
@@ -770,6 +865,7 @@ server.tool(
   {
     directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
   },
+  ANNOTATIONS["detect-local-git"],
   async ({ directory }) => {
     try {
       const result = detectLocalGit(directory || process.cwd());
@@ -792,6 +888,7 @@ server.tool(
   {
     directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
   },
+  ANNOTATIONS["package-source"],
   async ({ directory }) => {
     try {
       const result = await packageSource({ directory: directory || process.cwd() });
@@ -826,6 +923,7 @@ server.tool(
     application_id: z.string().optional().describe("Existing application ID to redeploy to"),
     name: z.string().optional().describe("Application name. Defaults to folder name for new apps."),
   },
+  ANNOTATIONS["upload-and-deploy"],
   async ({ organisation_id, directory, application_id, name }) => {
     try {
       const projectDir = directory || process.cwd();
@@ -970,6 +1068,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID to get status for"),
   },
+  ANNOTATIONS["get-formatted-status"],
   async ({ organisation_id, application_id }) => {
     // Get application with environments
     const appResult = await getApi().getApplication(organisation_id, application_id);
@@ -1008,6 +1107,7 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID to list applications for"),
   },
+  ANNOTATIONS["get-formatted-list"],
   async ({ organisation_id }) => {
     const result = await getApi().listApplications(organisation_id);
 
@@ -1038,6 +1138,7 @@ server.tool(
   {
     directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
   },
+  ANNOTATIONS["read-project-config"],
   async ({ directory }) => {
     try {
       const config = readConfig(directory || process.cwd());
@@ -1071,6 +1172,7 @@ server.tool(
     framework: z.string().optional().describe("Framework id to save, validated by the backend registry (e.g. react, nextjs, sveltekit, django, fastapi)"),
     deployment_type: z.enum(["static", "container"]).optional().describe("Deployment type to save"),
   },
+  ANNOTATIONS["write-project-config"],
   async ({ directory, organisation_id, application_id, environment_id, application_name, framework, deployment_type }) => {
     try {
       const config: LightCloudConfig = {};
@@ -1111,6 +1213,7 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID"),
   },
+  ANNOTATIONS["get-billing"],
   async ({ organisation_id }) => {
     const [summary, plans] = await Promise.all([
       getApi().getOwnerBillingSummary(),
@@ -1148,6 +1251,7 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID"),
   },
+  ANNOTATIONS["list-plans"],
   async ({ organisation_id }) => {
     const result = await getApi().getPlans(organisation_id);
     if (!result.success || !result.data) return text(formatError(result.error));
@@ -1169,6 +1273,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     plan_id: z.string().describe("Plan id from list-plans (e.g. hobby, starter, pro)"),
   },
+  ANNOTATIONS["choose-plan"],
   async ({ organisation_id, plan_id }) => {
     const result = await getApi().choosePlan(organisation_id, plan_id);
     if (!result.success || !result.data) return text(formatError(result.error));
@@ -1193,6 +1298,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     plan_id: z.string().optional().describe("Plan to switch to once the card is saved (from list-plans)"),
   },
+  ANNOTATIONS["add-payment-method"],
   async ({ organisation_id, plan_id }) => {
     const session = await getApi().createCheckoutSession(organisation_id);
     if (!session.success || !session.data) {
@@ -1224,6 +1330,7 @@ server.tool(
   "Wait for the card from add-payment-method to be saved (up to ~45 seconds per call; call again while it reports open). " +
   "Switches the plan afterwards if add-payment-method was given one.",
   {},
+  ANNOTATIONS["payment-method-status"],
   async () => {
     if (!pendingCheckout) {
       return text("No card setup is pending. Call add-payment-method first (or get-billing to see the card on file).");
@@ -1268,6 +1375,7 @@ server.tool(
   {
     organisation_id: z.string().describe("The organization ID"),
   },
+  ANNOTATIONS["list-databases"],
   async ({ organisation_id }) => formatResponse(await getApi().listDatabases(organisation_id))
 );
 
@@ -1278,6 +1386,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     database_id: z.string().describe("The database ID"),
   },
+  ANNOTATIONS["get-database"],
   async ({ organisation_id, database_id }) => formatResponse(await getApi().getDatabase(organisation_id, database_id))
 );
 
@@ -1293,6 +1402,7 @@ server.tool(
     tier: z.string().optional().describe("shared-dev (default) or a dedicated Cloud SQL tier such as db-f1-micro"),
     project_id: z.string().optional().describe("Folder (project) to create it in; default folder when omitted"),
   },
+  ANNOTATIONS["create-database"],
   async ({ organisation_id, name, engine, tier, project_id }) => {
     const result = await getApi().createDatabase({
       targetOrganisationId: organisation_id,
@@ -1312,6 +1422,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     database_id: z.string().describe("The database ID"),
   },
+  ANNOTATIONS["get-database-connection-string"],
   async ({ organisation_id, database_id }) =>
     formatResponse(await getApi().getDatabaseConnectionString(organisation_id, database_id))
 );
@@ -1327,6 +1438,7 @@ server.tool(
     environment_id: z.string().describe("The environment ID"),
     variables: z.record(z.string(), z.string()).describe("Key/value pairs to set"),
   },
+  ANNOTATIONS["set-environment-variables"],
   async ({ organisation_id, environment_id, variables }) => {
     const current = await getApi().getEnvironment(organisation_id, environment_id);
     if (!current.success) return text(formatError(current.error));
@@ -1349,6 +1461,7 @@ server.tool(
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID"),
   },
+  ANNOTATIONS["get-environment-variables"],
   async ({ organisation_id, environment_id }) => {
     const current = await getApi().getEnvironment(organisation_id, environment_id);
     if (!current.success) return text(formatError(current.error));
@@ -1367,6 +1480,7 @@ server.tool(
     min_instances: z.number().int().min(0).optional().describe("Minimum running instances (0 = scale to zero)"),
     max_instances: z.number().int().min(1).optional().describe("Maximum instances"),
   },
+  ANNOTATIONS["set-scaling"],
   async ({ organisation_id, environment_id, min_instances, max_instances }) =>
     formatResponse(await getApi().scaleEnvironment(organisation_id, environment_id, {
       minInstances: min_instances,
@@ -1383,6 +1497,7 @@ server.tool(
     environment_id: z.string().describe("The environment ID"),
     domain: z.string().describe("Hostname, e.g. app.example.com"),
   },
+  ANNOTATIONS["add-custom-domain"],
   async ({ organisation_id, application_id, environment_id, domain }) =>
     formatResponse(await getApi().addCustomDomain(organisation_id, application_id, environment_id, domain))
 );
@@ -1395,6 +1510,7 @@ server.tool(
     application_id: z.string().describe("The application ID"),
     environment_id: z.string().describe("The environment ID"),
   },
+  ANNOTATIONS["get-custom-domain-status"],
   async ({ organisation_id, application_id, environment_id }) =>
     formatResponse(await getApi().checkCustomDomain(organisation_id, application_id, environment_id))
 );

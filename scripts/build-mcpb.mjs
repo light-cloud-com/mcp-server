@@ -74,7 +74,7 @@ const manifest = {
   prompts_generated: true,
   keywords: ['light-cloud', 'deploy', 'hosting', 'cloud', 'devops', 'database', 'billing', 'claude-code', 'mcp'],
   license: pkg.license,
-  privacy_policies: ['https://www.light-cloud.com/privacy'],
+  privacy_policies: ['https://www.light-cloud.com/legal/privacy-policy'],
   compatibility: {
     claude_desktop: '>=0.10.0',
     platforms: ['darwin', 'win32', 'linux'],
