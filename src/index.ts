@@ -21,6 +21,7 @@ import { readConfig, writeConfig } from "./config/config-manager.js";
 import { generateFormattedStatus, generateFormattedList, DASHBOARD_BASE_URL } from "./utils/formatting.js";
 import type { LightCloudConfig, Application, Environment } from "./types.js";
 import * as path from "path";
+import * as fs from "fs";
 
 // Create MCP server instance
 // Sent to the client at initialize: what this server can do that a model
@@ -36,6 +37,8 @@ const SERVER_INSTRUCTIONS = [
   "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; the free plan is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
   "",
   "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. The `deploy-from-scratch` prompt walks the full path in order.",
+  "",
+  "SCOPE: everything the console does is here — app and environment settings, folders, stacks, database admin (schema, SQL, dump, import, metrics), invoices and spending limits, workspaces and members, API keys (paid plans), git provider links, notifications, support. Console-only by design: the account password, two-factor, and the Agents & CLI switch. A refusal with code AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED means the user turned that off under Settings → Security → Agents & CLI: tell them, do not retry, do not look for another route.",
 ].join("\n");
 
 const server = new McpServer(
@@ -1632,6 +1635,596 @@ server.tool(
   ANNOTATIONS["get-custom-domain-status"],
   async ({ organisation_id, application_id, environment_id }) =>
     formatResponse(await getApi().checkCustomDomain(organisation_id, application_id, environment_id))
+);
+
+// ============ Parity with the console (2026-09-15) ============
+// Everything the console can do that a person would reasonably ask an
+// assistant for. Console-only by design: changing the account password,
+// two-factor settings, and the "Agents & CLI" switch itself.
+
+const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+const RM = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+const orgArg = z.string().describe("The organization (workspace) ID");
+
+// -- applications & environments --------------------------------------------
+
+server.tool(
+  "update-application",
+  "Change an application's build settings: framework, build command, output directory, monorepo root, runtime, container port, default size and instance limits, auto-deploy branches, GitHub checks. Only the fields given change. Redeploy afterwards for a build change to take effect.",
+  {
+    organisation_id: orgArg,
+    application_id: z.string(),
+    framework: z.string().optional(),
+    build_command: z.string().optional(),
+    output_directory: z.string().optional(),
+    root_directory: z.string().optional().describe("Repo-relative folder to build from (monorepos)"),
+    runtime: z.string().optional(),
+    container_port: z.number().int().optional(),
+    memory: z.string().optional().describe("e.g. 512Mi, 1Gi"),
+    cpu: z.string().optional(),
+    min_instances: z.number().int().min(0).optional(),
+    max_instances: z.number().int().min(1).optional(),
+    auto_deploy_branches: z.array(z.string()).optional().describe("Branches that deploy on push"),
+    auto_delete_stale_envs: z.boolean().optional(),
+    github_checks_enabled: z.boolean().optional(),
+    github_pr_comments_enabled: z.boolean().optional(),
+  },
+  { title: "Update application", ...RW },
+  async ({ organisation_id, application_id, ...rest }) => {
+    const changes: Record<string, unknown> = {};
+    const map: Record<string, string> = {
+      framework: "framework", build_command: "buildCommand", output_directory: "outputDirectory", root_directory: "rootDirectory",
+      runtime: "runtime", container_port: "containerPort", memory: "memory", cpu: "cpu", min_instances: "minInstances",
+      max_instances: "maxInstances", auto_deploy_branches: "autoDeployBranches", auto_delete_stale_envs: "autoDeleteStaleEnvs",
+      github_checks_enabled: "githubChecksEnabled", github_pr_comments_enabled: "githubPrCommentsEnabled",
+    };
+    for (const [key, value] of Object.entries(rest)) if (value !== undefined) changes[map[key]] = value;
+    if (Object.keys(changes).length === 0) return text("Nothing to change: pass at least one setting.");
+    return formatResponse(await getApi().updateApplication(organisation_id, application_id, changes));
+  }
+);
+
+server.tool(
+  "update-environment",
+  "Change one environment's settings: name, build command, output directory, container port, memory, cpu, instance limits, auto-deploy on push. Only the fields given change. For variables use set-environment-variables; for the password gate use set-password-protection.",
+  {
+    organisation_id: orgArg,
+    environment_id: z.string(),
+    name: z.string().optional(),
+    build_command: z.string().optional(),
+    output_directory: z.string().optional(),
+    container_port: z.number().int().optional(),
+    memory: z.string().optional(),
+    cpu: z.string().optional(),
+    min_instances: z.number().int().min(0).optional(),
+    max_instances: z.number().int().min(1).optional(),
+    auto_deploy: z.boolean().optional().describe("Redeploy automatically on push to this environment's branch"),
+  },
+  { title: "Update environment", ...RW },
+  async ({ organisation_id, environment_id, ...rest }) => {
+    const changes: Record<string, unknown> = {};
+    const map: Record<string, string> = {
+      name: "name", build_command: "buildCommand", output_directory: "outputDirectory", container_port: "containerPort",
+      memory: "memory", cpu: "cpu", min_instances: "minInstances", max_instances: "maxInstances", auto_deploy: "autoDeploy",
+    };
+    for (const [key, value] of Object.entries(rest)) if (value !== undefined) changes[map[key]] = value;
+    if (Object.keys(changes).length === 0) return text("Nothing to change: pass at least one setting.");
+    return formatResponse(await getApi().updateEnvironment(organisation_id, environment_id, changes));
+  }
+);
+
+server.tool(
+  "rename-application",
+  "Rename an application. The light-cloud.io URL keeps the original slug.",
+  { organisation_id: orgArg, application_id: z.string(), name: z.string().min(1) },
+  { title: "Rename application", ...RW },
+  async ({ organisation_id, application_id, name }) => formatResponse(await getApi().renameApplication(organisation_id, application_id, name))
+);
+
+server.tool(
+  "move-application",
+  "Move an application into a folder (project), or to the workspace root with no folder.",
+  { organisation_id: orgArg, application_id: z.string(), folder_id: z.string().optional().describe("Target folder id; omit for the root") },
+  { title: "Move application", ...RW },
+  async ({ organisation_id, application_id, folder_id }) => formatResponse(await getApi().moveApplication(organisation_id, application_id, folder_id ?? null))
+);
+
+server.tool(
+  "remove-custom-domain",
+  "Detach an environment's custom domain; the light-cloud.io address keeps serving.",
+  { organisation_id: orgArg, application_id: z.string(), environment_id: z.string() },
+  { title: "Remove custom domain", ...RM },
+  async ({ organisation_id, application_id, environment_id }) => formatResponse(await getApi().removeCustomDomain(organisation_id, application_id, environment_id))
+);
+
+server.tool(
+  "retry-custom-domain",
+  "Retry certificate issuance for an environment's custom domain after fixing DNS.",
+  { organisation_id: orgArg, environment_id: z.string() },
+  { title: "Retry custom domain", ...RW },
+  async ({ organisation_id, environment_id }) => formatResponse(await getApi().retryCustomDomain(organisation_id, environment_id))
+);
+
+server.tool(
+  "list-repo-directories",
+  "Folders inside a repository branch, for picking a monorepo root before create-application.",
+  {
+    organisation_id: orgArg,
+    owner: z.string().describe("Repository owner / group / workspace"),
+    repo: z.string(),
+    branch: z.string().optional(),
+    path: z.string().optional().describe("Folder to list; omit for the root"),
+    git_provider: z.enum(["github", "gitlab", "bitbucket"]).optional(),
+  },
+  { title: "List repository folders", ...RO },
+  async ({ organisation_id, owner, repo, branch, path: dir, git_provider }) =>
+    formatResponse(await getApi().listRepoDirectories(organisation_id, owner, repo, branch ?? "main", dir, git_provider))
+);
+
+server.tool(
+  "get-environment-metrics",
+  "Requests, latency, errors, instances, CPU and memory for an environment over a time range.",
+  { organisation_id: orgArg, environment_id: z.string(), time_range: z.enum(["1h", "6h", "24h", "7d"]).optional() },
+  { title: "Get environment metrics", ...RO },
+  async ({ organisation_id, environment_id, time_range }) => formatResponse(await getApi().getEnvironmentMetrics(organisation_id, environment_id, time_range ?? "24h"))
+);
+
+server.tool(
+  "get-environment-activity",
+  "Who changed what on an environment, newest first: deploys, settings, scaling, domains, password gate.",
+  { organisation_id: orgArg, environment_id: z.string(), limit: z.number().int().min(1).max(100).optional() },
+  { title: "Get environment activity", ...RO },
+  async ({ organisation_id, environment_id, limit }) => formatResponse(await getApi().getEnvironmentActivity(organisation_id, environment_id, limit ?? 30))
+);
+
+server.tool(
+  "get-environment-runtime",
+  "What is running right now for an environment: the live deployment, instances, region, size.",
+  { organisation_id: orgArg, environment_id: z.string() },
+  { title: "Get environment runtime", ...RO },
+  async ({ organisation_id, environment_id }) => formatResponse(await getApi().getEnvironmentRuntime(organisation_id, environment_id))
+);
+
+server.tool(
+  "get-build-logs",
+  "The build log of one deployment (the step that turns source into a running app). For runtime logs use get-environment-logs.",
+  { organisation_id: orgArg, deployment_id: z.string(), page_token: z.string().optional() },
+  { title: "Get build logs", ...RO },
+  async ({ organisation_id, deployment_id, page_token }) => formatResponse(await getApi().getBuildLogs(organisation_id, deployment_id, page_token))
+);
+
+server.tool(
+  "rollback-deployment",
+  "Put an earlier deployment back live, without rebuilding. Pick the deployment id from list-deployments.",
+  { organisation_id: orgArg, environment_id: z.string(), deployment_id: z.string() },
+  { title: "Roll back deployment", ...RW },
+  async ({ organisation_id, environment_id, deployment_id }) => formatResponse(await getApi().rollbackDeployment(organisation_id, environment_id, deployment_id))
+);
+
+// -- folders (projects) -------------------------------------------------------
+
+server.tool(
+  "list-folders",
+  "Folders (projects) in a workspace, used to group apps and databases.",
+  { organisation_id: orgArg, parent_id: z.string().optional() },
+  { title: "List folders", ...RO },
+  async ({ organisation_id, parent_id }) => formatResponse(await getApi().listProjects(organisation_id, parent_id ?? null))
+);
+
+server.tool(
+  "create-folder",
+  "Create a folder (project) in a workspace, optionally inside another folder.",
+  { organisation_id: orgArg, name: z.string().min(1), parent_id: z.string().optional() },
+  { title: "Create folder", ...RW },
+  async ({ organisation_id, name, parent_id }) => formatResponse(await getApi().createProject(organisation_id, name, parent_id ?? null))
+);
+
+server.tool(
+  "delete-folder",
+  "Delete an empty folder (project).",
+  { organisation_id: orgArg, folder_id: z.string() },
+  { title: "Delete folder", ...RM },
+  async ({ organisation_id, folder_id }) => formatResponse(await getApi().deleteProject(organisation_id, folder_id))
+);
+
+server.tool(
+  "create-stack",
+  "Create an app from a stack template (for example the Open SaaS / Wasp stack): a repository is created for the user, the app is set up from it and deployed. Stacks are listed by get-platform-config when enabled for the workspace.",
+  {
+    organisation_id: orgArg,
+    stack_id: z.string(),
+    name: z.string(),
+    repo_name: z.string().optional().describe("Name for the repository created in the connected GitHub account"),
+    region: z.string().optional(),
+    folder_id: z.string().optional(),
+    environment_vars: z.record(z.string(), z.string()).optional(),
+  },
+  { title: "Create from stack", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  async ({ organisation_id, stack_id, name, repo_name, region, folder_id, environment_vars }) =>
+    formatResponse(await getApi().createStack(organisation_id, stack_id, { name, repoName: repo_name, region, projectId: folder_id, environmentVars: environment_vars }))
+);
+
+// -- databases ------------------------------------------------------------------
+
+server.tool(
+  "update-database",
+  "Change a database's name, tier, region, storage or high availability. Only the fields given change; a tier or storage change may take a few minutes.",
+  {
+    organisation_id: orgArg, database_id: z.string(),
+    name: z.string().optional(), tier: z.string().optional(), region: z.string().optional(),
+    storage_gb: z.number().int().optional(), ha_enabled: z.boolean().optional(),
+  },
+  { title: "Update database", ...RW },
+  async ({ organisation_id, database_id, name, tier, region, storage_gb, ha_enabled }) => {
+    const changes: Record<string, unknown> = {};
+    if (name !== undefined) changes.name = name;
+    if (tier !== undefined) changes.tier = tier;
+    if (region !== undefined) changes.region = region;
+    if (storage_gb !== undefined) changes.storageGb = storage_gb;
+    if (ha_enabled !== undefined) changes.haEnabled = ha_enabled;
+    if (Object.keys(changes).length === 0) return text("Nothing to change: pass at least one setting.");
+    return formatResponse(await getApi().updateDatabase(organisation_id, database_id, changes));
+  }
+);
+
+server.tool(
+  "delete-database",
+  "Delete a database and all its data. Irreversible; confirm with the user first.",
+  { organisation_id: orgArg, database_id: z.string() },
+  { title: "Delete database", ...RM },
+  async ({ organisation_id, database_id }) => formatResponse(await getApi().deleteDatabase(organisation_id, database_id))
+);
+
+server.tool(
+  "rotate-database-password",
+  "Generate a new admin password for a database. Apps using the old one must get the new connection string (get-database-connection-string, then set-environment-variables).",
+  { organisation_id: orgArg, database_id: z.string() },
+  { title: "Rotate database password", ...RW },
+  async ({ organisation_id, database_id }) => {
+    const result = await getApi().rotateDatabasePassword(organisation_id, database_id);
+    if (!result.success) return text(formatError(result.error));
+    return text("Password rotated. Fetch the new connection string with get-database-connection-string and update the app's DATABASE_URL.");
+  }
+);
+
+server.tool(
+  "get-database-metrics",
+  "Connections, CPU, memory, storage and query load for a database over a time range.",
+  { organisation_id: orgArg, database_id: z.string(), time_range: z.enum(["1h", "6h", "24h", "7d"]).optional() },
+  { title: "Get database metrics", ...RO },
+  async ({ organisation_id, database_id, time_range }) => formatResponse(await getApi().getDatabaseMetrics(organisation_id, database_id, time_range ?? "1h"))
+);
+
+server.tool(
+  "get-database-schema",
+  "Schemas, tables, columns and row counts of a database.",
+  { organisation_id: orgArg, database_id: z.string() },
+  { title: "Get database schema", ...RO },
+  async ({ organisation_id, database_id }) => formatResponse(await getApi().getDatabaseSchema(organisation_id, database_id))
+);
+
+server.tool(
+  "query-database",
+  "Run SQL against a database. Read-only unless allow_writes is true; results are capped by the platform. Never print secrets from the results into files.",
+  { organisation_id: orgArg, database_id: z.string(), sql: z.string().min(1), allow_writes: z.boolean().optional() },
+  { title: "Query database", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  async ({ organisation_id, database_id, sql, allow_writes }) => formatResponse(await getApi().queryDatabase(organisation_id, database_id, sql, allow_writes === true))
+);
+
+server.tool(
+  "dump-database",
+  "Download a compressed SQL dump of a database to a local file (gzip). Returns the path written.",
+  { organisation_id: orgArg, database_id: z.string(), output_path: z.string().optional().describe("Where to write the .sql.gz; defaults to the current directory") },
+  { title: "Dump database", ...RO },
+  async ({ organisation_id, database_id, output_path }) => {
+    const response = await getApi().dumpDatabase(organisation_id, database_id);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({} as { message?: string }));
+      return text(`Error: ${(body as { message?: string }).message ?? `${response.status} ${response.statusText}`}`);
+    }
+    const target = output_path ?? path.join(process.cwd(), `${database_id}-${new Date().toISOString().slice(0, 10)}.sql.gz`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await fs.promises.writeFile(target, buffer);
+    return text(JSON.stringify({ path: target, bytes: buffer.length }, null, 2));
+  }
+);
+
+server.tool(
+  "import-database",
+  "Load a SQL dump (.sql or .sql.gz) from a local file into a database. Existing data is not cleared first.",
+  { organisation_id: orgArg, database_id: z.string(), file_path: z.string() },
+  { title: "Import database", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  async ({ organisation_id, database_id, file_path }) => {
+    const buffer = await fs.promises.readFile(file_path);
+    const response = await getApi().importDatabase(organisation_id, database_id, new Uint8Array(buffer), file_path.endsWith(".gz"));
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) return text(`Error: ${(body as { message?: string }).message ?? `${response.status} ${response.statusText}`}`);
+    return formatResponse({ success: true, data: body });
+  }
+);
+
+// -- billing --------------------------------------------------------------------
+
+server.tool(
+  "get-usage",
+  "Usage against the workspace's pool this cycle, per resource, with daily points.",
+  { organisation_id: orgArg, days: z.number().int().min(1).max(90).optional() },
+  { title: "Get usage", ...RO },
+  async ({ organisation_id, days }) => formatResponse(await getApi().getUsage(organisation_id, days ?? 30))
+);
+
+server.tool(
+  "get-usage-history",
+  "Usage over previous billing cycles.",
+  { organisation_id: orgArg, days: z.number().int().min(1).max(365).optional() },
+  { title: "Get usage history", ...RO },
+  async ({ organisation_id, days }) => formatResponse(await getApi().getUsageHistory(organisation_id, days ?? 90))
+);
+
+server.tool(
+  "list-invoices",
+  "Invoices for a workspace, newest first, with status and totals.",
+  { organisation_id: orgArg, limit: z.number().int().min(1).max(50).optional(), status: z.string().optional() },
+  { title: "List invoices", ...RO },
+  async ({ organisation_id, limit, status }) => formatResponse(await getApi().listInvoices(organisation_id, limit ?? 20, status))
+);
+
+server.tool(
+  "get-invoice",
+  "One invoice with its lines.",
+  { organisation_id: orgArg, invoice_id: z.string() },
+  { title: "Get invoice", ...RO },
+  async ({ organisation_id, invoice_id }) => formatResponse(await getApi().getInvoice(organisation_id, invoice_id))
+);
+
+server.tool(
+  "get-outstanding-invoices",
+  "Unpaid invoices across the workspaces you own — what is blocking a suspended workspace.",
+  {},
+  { title: "Get outstanding invoices", ...RO },
+  async () => formatResponse(await getApi().getOutstanding())
+);
+
+server.tool(
+  "retry-invoice",
+  "Charge the card on file again for a failed invoice.",
+  { organisation_id: orgArg, invoice_id: z.string() },
+  { title: "Retry invoice", ...RW },
+  async ({ organisation_id, invoice_id }) => formatResponse(await getApi().retryInvoice(organisation_id, invoice_id))
+);
+
+server.tool(
+  "remove-payment-method",
+  "Remove the card on file. Refused while the workspace is on a paid plan or has unpaid invoices.",
+  { organisation_id: orgArg },
+  { title: "Remove payment method", ...RM },
+  async ({ organisation_id }) => formatResponse(await getApi().removePaymentMethod(organisation_id))
+);
+
+server.tool(
+  "get-spending-limit",
+  "The workspace's spending limit and budget alert threshold.",
+  { organisation_id: orgArg },
+  { title: "Get spending limit", ...RO },
+  async ({ organisation_id }) => formatResponse(await getApi().getBillingSettings(organisation_id))
+);
+
+server.tool(
+  "set-spending-limit",
+  "Set a monthly spending limit (USD) and the percentage at which to alert. Pass null to clear the limit.",
+  { organisation_id: orgArg, spending_limit: z.number().nullable().optional(), budget_alert_threshold: z.number().min(1).max(100).nullable().optional() },
+  { title: "Set spending limit", ...RW },
+  async ({ organisation_id, spending_limit, budget_alert_threshold }) => {
+    const settings: { spending_limit?: number | null; budget_alert_threshold?: number | null } = {};
+    if (spending_limit !== undefined) settings.spending_limit = spending_limit;
+    if (budget_alert_threshold !== undefined) settings.budget_alert_threshold = budget_alert_threshold;
+    return formatResponse(await getApi().setBillingSettings(organisation_id, settings));
+  }
+);
+
+server.tool(
+  "get-billing-details",
+  "The billing address and tax ids on the workspace's invoices.",
+  { organisation_id: orgArg },
+  { title: "Get billing details", ...RO },
+  async ({ organisation_id }) => formatResponse(await getApi().getBillingDetails(organisation_id))
+);
+
+server.tool(
+  "set-billing-details",
+  "Set the billing address and tax ids printed on invoices. Only the fields given change.",
+  {
+    organisation_id: orgArg,
+    is_company: z.boolean().optional(), company_name: z.string().optional(), billing_email: z.string().optional(), phone: z.string().optional(),
+    first_name: z.string().optional(), last_name: z.string().optional(),
+    street: z.string().optional(), street_number: z.string().optional(), apartment: z.string().optional(),
+    city: z.string().optional(), post_code: z.string().optional(), country: z.string().optional().describe("ISO 3166-1 alpha-2"),
+    tin: z.string().optional(), vat_number: z.string().optional(),
+  },
+  { title: "Set billing details", ...RW },
+  async ({ organisation_id, ...rest }) => {
+    const map: Record<string, string> = {
+      is_company: "is_company", company_name: "company_name", billing_email: "billing_email", phone: "phone",
+      first_name: "address_first_name", last_name: "address_last_name", street: "address_street", street_number: "address_street_number",
+      apartment: "address_apartment_number", city: "address_city", post_code: "address_post_code", country: "address_country",
+      tin: "tin", vat_number: "vat_number",
+    };
+    const details: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(rest)) if (value !== undefined) details[map[key]] = value;
+    return formatResponse(await getApi().setBillingDetails(organisation_id, details));
+  }
+);
+
+// -- workspaces, members, roles ----------------------------------------------
+
+server.tool(
+  "create-workspace",
+  "Create a new workspace (organisation) owned by the signed-in user, on the free plan.",
+  { name: z.string().min(2) },
+  { title: "Create workspace", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  async ({ name }) => formatResponse(await getApi().createOrganisation(name))
+);
+
+server.tool(
+  "list-members",
+  "Members of a workspace with their roles and status.",
+  { organisation_id: orgArg },
+  { title: "List members", ...RO },
+  async ({ organisation_id }) => formatResponse(await getApi().listMembers(organisation_id))
+);
+
+server.tool(
+  "invite-member",
+  "Invite someone to a workspace by email with a role (see list-roles). They get an email; the seat is active once they sign in.",
+  { organisation_id: orgArg, email: z.string().email(), role: z.string().describe("Role name, e.g. admin or user") },
+  { title: "Invite member", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  async ({ organisation_id, email, role }) => formatResponse(await getApi().inviteMember(organisation_id, email, role))
+);
+
+server.tool(
+  "remove-member",
+  "Remove a member from a workspace.",
+  { organisation_id: orgArg, user_id: z.string() },
+  { title: "Remove member", ...RM },
+  async ({ organisation_id, user_id }) => formatResponse(await getApi().removeMember(organisation_id, user_id))
+);
+
+server.tool(
+  "set-member-role",
+  "Change a member's role in a workspace.",
+  { organisation_id: orgArg, user_id: z.string(), role: z.string() },
+  { title: "Set member role", ...RW },
+  async ({ organisation_id, user_id, role }) => formatResponse(await getApi().setMemberRole(organisation_id, user_id, role))
+);
+
+server.tool(
+  "list-roles",
+  "Roles available in a workspace and what each may do.",
+  { organisation_id: orgArg },
+  { title: "List roles", ...RO },
+  async ({ organisation_id }) => formatResponse(await getApi().listRoles(organisation_id))
+);
+
+// -- account --------------------------------------------------------------------
+
+server.tool(
+  "update-profile",
+  "Change the signed-in user's name or time zone. Password and two-factor settings are changed in the console only.",
+  { first_name: z.string().optional(), last_name: z.string().optional(), timezone: z.string().optional().describe("IANA zone, e.g. Europe/Warsaw") },
+  { title: "Update profile", ...RW },
+  async ({ first_name, last_name, timezone }) => {
+    const results: string[] = [];
+    if (first_name !== undefined || last_name !== undefined) {
+      const profile = await getApi().getProfile();
+      const current = profile.success && profile.data ? (profile.data as unknown as { first_name?: string; last_name?: string }) : {};
+      const r = await getApi().setProfileName(first_name ?? current.first_name ?? "", last_name ?? current.last_name ?? "");
+      results.push(r.success ? "Name updated." : formatError(r.error));
+    }
+    if (timezone !== undefined) {
+      const r = await getApi().setTimezone(timezone);
+      results.push(r.success ? `Time zone set to ${timezone}.` : formatError(r.error));
+    }
+    return text(results.join(" ") || "Nothing to change.");
+  }
+);
+
+server.tool(
+  "list-connected-devices",
+  "Every signed-in session on the account: browsers, the CLI, MCP servers, VS Code.",
+  {},
+  { title: "List connected devices", ...RO },
+  async () => formatResponse(await getApi().listSessions())
+);
+
+server.tool(
+  "sign-out-device",
+  "Sign one session out (from list-connected-devices). It stops working within fifteen minutes.",
+  { session_id: z.string() },
+  { title: "Sign out device", ...RM },
+  async ({ session_id }) => formatResponse(await getApi().revokeSession(session_id))
+);
+
+server.tool(
+  "get-agent-access",
+  "What this account lets agents (the CLI, MCP servers, VS Code) do — the switch under Settings → Security → Agents & CLI. Read-only here; it is changed in the console.",
+  {},
+  { title: "Get agent access", ...RO },
+  async () => formatResponse(await getApi().getAgentAccess())
+);
+
+// -- git providers -------------------------------------------------------------
+
+server.tool(
+  "connect-git-provider",
+  "A link that connects a GitLab or Bitbucket account to a workspace. Give it to the user to open; once approved, create-application works with that provider's repositories. GitHub uses get-github-install-url.",
+  { organisation_id: orgArg, provider: z.enum(["gitlab", "bitbucket"]) },
+  { title: "Connect git provider", ...RO },
+  async ({ organisation_id, provider }) => {
+    const result = await getApi().gitProviderConnectUrl(provider, organisation_id);
+    if (!result.success || !result.data?.url) return text(formatError(result.error));
+    return text(`Open this link to connect ${provider === "gitlab" ? "GitLab" : "Bitbucket"} (it signs in and authorises in one step):\n${result.data.url}`);
+  }
+);
+
+server.tool(
+  "list-provider-repositories",
+  "Repositories a workspace can reach through its connected GitLab or Bitbucket account. GitHub uses list-repositories.",
+  { organisation_id: orgArg, provider: z.enum(["gitlab", "bitbucket"]) },
+  { title: "List provider repositories", ...RO },
+  async ({ organisation_id, provider }) => formatResponse(await getApi().listGitProviderRepositories(provider, organisation_id))
+);
+
+// -- API keys --------------------------------------------------------------------
+
+server.tool(
+  "list-api-keys",
+  "API keys of a workspace (name, role, prefix, created, last used). Secrets are never shown again after creation.",
+  { organisation_id: orgArg },
+  { title: "List API keys", ...RO },
+  async ({ organisation_id }) => formatResponse(await getApi().listApiKeys(organisation_id))
+);
+
+server.tool(
+  "create-api-key",
+  "Create an API key for CI and other machines (lc login --api-key, or LIGHT_CLOUD_API_KEY). Paid plans only — a refusal names choose-plan as the next step. The secret is returned once; hand it to the user, never write it into files.",
+  { organisation_id: orgArg, name: z.string().min(1), role: z.enum(["admin", "user"]).optional(), expires_at: z.string().optional().describe("ISO date; omit for no expiry") },
+  { title: "Create API key", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  async ({ organisation_id, name, role, expires_at }) => formatResponse(await getApi().createApiKey(organisation_id, name, role, expires_at))
+);
+
+server.tool(
+  "revoke-api-key",
+  "Revoke an API key. Anything using it stops at once.",
+  { organisation_id: orgArg, key_id: z.string() },
+  { title: "Revoke API key", ...RM },
+  async ({ organisation_id, key_id }) => formatResponse(await getApi().revokeApiKey(organisation_id, key_id))
+);
+
+// -- notifications & support ---------------------------------------------------
+
+server.tool(
+  "list-notifications",
+  "The account's notifications (deploy results, billing, invitations), newest first.",
+  { unread_only: z.boolean().optional(), limit: z.number().int().min(1).max(100).optional() },
+  { title: "List notifications", ...RO },
+  async ({ unread_only, limit }) => formatResponse(await getApi().listNotifications(unread_only === true, limit ?? 20))
+);
+
+server.tool(
+  "mark-notifications-read",
+  "Mark one notification read, or all of them when no id is given.",
+  { notification_id: z.string().optional() },
+  { title: "Mark notifications read", ...RW },
+  async ({ notification_id }) => formatResponse(await getApi().markNotificationsRead(notification_id))
+);
+
+server.tool(
+  "contact-support",
+  "Send a message to Light Cloud support from the signed-in account.",
+  { kind: z.enum(["support", "feature_request"]).optional().describe("support (default) for help and bugs, feature_request for ideas"), subject: z.string().min(1).max(200), message: z.string().min(1) },
+  { title: "Contact support", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  async ({ kind, subject, message }) => formatResponse(await getApi().contactSupport(kind ?? "support", subject, message))
 );
 
 // ============ Guided path ============

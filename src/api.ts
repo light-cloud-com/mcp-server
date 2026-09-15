@@ -523,4 +523,200 @@ export class LightCloudApi {
   async getCloudRunConfig(): Promise<ApiResponse<Record<string, unknown>>> {
     return this.client.get<Record<string, unknown>>('/api/config/cloudrun');
   }
+
+  // ============ Parity with the console (2026-09-15) ============
+  // Thin wrappers: the backend validates, the sanitizer trims the answer.
+
+  private org(organisationId: string, rest: Record<string, unknown> = {}) {
+    return { targetOrganisationId: organisationId, ...rest };
+  }
+
+  // -- applications & environments --
+  async updateApplication(organisationId: string, applicationId: string, changes: Record<string, unknown>): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/update', this.org(organisationId, { applicationId, ...changes }));
+  }
+  async renameApplication(organisationId: string, applicationId: string, name: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/rename', this.org(organisationId, { applicationId, name }));
+  }
+  async moveApplication(organisationId: string, applicationId: string, targetFolderId: string | null): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/move', this.org(organisationId, { applicationId, targetFolderId }));
+  }
+  async removeCustomDomain(organisationId: string, applicationId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/remove-domain', this.org(organisationId, { applicationId, environmentId }));
+  }
+  async retryCustomDomain(organisationId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/environments/retry-domain', this.org(organisationId, { environmentId }));
+  }
+  async listRepoDirectories(organisationId: string, owner: string, repo: string, branch: string, path?: string, gitProvider?: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/list-repo-directories', { organisationId, owner, repo, branch, path, gitProvider });
+  }
+  async getEnvironmentMetrics(organisationId: string, environmentId: string, timeRange?: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/environments/metrics/detailed', this.org(organisationId, { environmentId, timeRange }));
+  }
+  async getEnvironmentActivity(organisationId: string, environmentId: string, limit?: number): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/environments/activity', this.org(organisationId, { environmentId, limit }));
+  }
+  async getEnvironmentRuntime(organisationId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/environments/runtime', this.org(organisationId, { environmentId }));
+  }
+  async getBuildLogs(organisationId: string, deploymentId: string, pageToken?: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/deployments/build-logs', this.org(organisationId, { deploymentId, pageToken }));
+  }
+  async rollbackDeployment(organisationId: string, environmentId: string, deploymentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/deployments/rollback', this.org(organisationId, { environmentId, deploymentId }));
+  }
+
+  // -- projects (folders) --
+  async listProjects(organisationId: string, parentId?: string | null): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/projects', this.org(organisationId, { page: 1, limit: 100, parentId: parentId ?? undefined }));
+  }
+  async createProject(organisationId: string, name: string, parentId?: string | null): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/projects/create', this.org(organisationId, { name, type: 'folder', parentId: parentId ?? undefined }));
+  }
+  async deleteProject(organisationId: string, projectId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/projects/delete', this.org(organisationId, { projectId }));
+  }
+
+  // -- stacks --
+  async createStack(organisationId: string, stackId: string, body: Record<string, unknown>): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/stacks/create', this.org(organisationId, { stackId, ...body }));
+  }
+
+  // -- databases --
+  async updateDatabase(organisationId: string, databaseId: string, changes: Record<string, unknown>): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/update', this.org(organisationId, { databaseId, ...changes }));
+  }
+  async deleteDatabase(organisationId: string, databaseId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/delete', this.org(organisationId, { databaseId }));
+  }
+  async rotateDatabasePassword(organisationId: string, databaseId: string, newPassword?: string): Promise<ApiResponse<{ password: string }>> {
+    return this.client.post('/api/databases/rotate-password', this.org(organisationId, { databaseId, newPassword }));
+  }
+  async getDatabaseMetrics(organisationId: string, databaseId: string, timeRange?: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/metrics', this.org(organisationId, { databaseId, timeRange }));
+  }
+  async getDatabaseSchema(organisationId: string, databaseId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/explorer/schema', this.org(organisationId, { databaseId }));
+  }
+  async queryDatabase(organisationId: string, databaseId: string, sql: string, allowWrites = false): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/explorer/query', this.org(organisationId, { databaseId, sql, allowWrites }));
+  }
+  async dumpDatabase(organisationId: string, databaseId: string): Promise<Response> {
+    return this.client.raw('POST', '/api/databases/dump', {
+      body: JSON.stringify(this.org(organisationId, { databaseId })),
+      contentType: 'application/json',
+    });
+  }
+  async importDatabase(organisationId: string, databaseId: string, body: BodyInit, gzip: boolean): Promise<Response> {
+    const query = new URLSearchParams({ targetOrganisationId: organisationId, databaseId });
+    return this.client.raw('POST', `/api/databases/import?${query}`, {
+      body,
+      contentType: gzip ? 'application/gzip' : 'application/sql',
+    });
+  }
+
+  // -- billing --
+  async getUsage(organisationId: string, days = 30): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/usage', this.org(organisationId, { includeDaily: true, days }));
+  }
+  async getUsageHistory(organisationId: string, days = 30): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/usage-history', this.org(organisationId, { days }));
+  }
+  async listInvoices(organisationId: string, limit = 20, status?: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/invoices', this.org(organisationId, { limit, status }));
+  }
+  async getInvoice(organisationId: string, invoiceId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post(`/api/billing/invoice/${encodeURIComponent(invoiceId)}`, this.org(organisationId));
+  }
+  async getOutstanding(): Promise<ApiResponse<unknown>> {
+    return this.client.get('/api/billing/outstanding');
+  }
+  async retryInvoice(organisationId: string, invoiceId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/invoice/retry', this.org(organisationId, { invoiceId }));
+  }
+  async removePaymentMethod(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/payment-method/remove', this.org(organisationId));
+  }
+  async getBillingSettings(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/settings/get', this.org(organisationId));
+  }
+  async setBillingSettings(organisationId: string, settings: { spending_limit?: number | null; budget_alert_threshold?: number | null }): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/settings', this.org(organisationId, settings));
+  }
+  async getBillingDetails(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/details/get', this.org(organisationId));
+  }
+  async setBillingDetails(organisationId: string, details: Record<string, unknown>): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/billing/details', this.org(organisationId, details));
+  }
+
+  // -- workspaces, members, roles --
+  async createOrganisation(name: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/organisations/create', { name });
+  }
+  async listMembers(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/users', this.org(organisationId, { page: 1, limit: 100 }));
+  }
+  async inviteMember(organisationId: string, email: string, role: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/users/invite', this.org(organisationId, { email, role }));
+  }
+  async removeMember(organisationId: string, userId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/users/remove', this.org(organisationId, { userId }));
+  }
+  async setMemberRole(organisationId: string, userId: string, newRole: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/users/update-role', this.org(organisationId, { userId, newRole }));
+  }
+  async listRoles(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/roles/all', this.org(organisationId));
+  }
+
+  // -- profile & account --
+  async setProfileName(firstName: string, lastName: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/profile/name', { firstName, lastName });
+  }
+  async setTimezone(timezone: string): Promise<ApiResponse<unknown>> {
+    return this.client.put('/api/profile/timezone', { timezone, source: 'manual' });
+  }
+  async listSessions(): Promise<ApiResponse<unknown>> {
+    return this.client.get('/api/auth/sessions');
+  }
+  async revokeSession(sessionId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/auth/sessions/revoke', { sessionId });
+  }
+  async getAgentAccess(): Promise<ApiResponse<unknown>> {
+    return this.client.get('/api/profile/agent-access');
+  }
+
+  // -- git providers --
+  async gitProviderConnectUrl(provider: 'gitlab' | 'bitbucket', organisationId: string): Promise<ApiResponse<{ url: string }>> {
+    const query = new URLSearchParams({ organisationId });
+    return this.client.get<{ url: string }>(`/api/${provider}/connect?${query}`);
+  }
+  async listGitProviderRepositories(provider: 'gitlab' | 'bitbucket', organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.get(`/api/${provider}/organisation/${organisationId}/repositories`);
+  }
+
+  // -- API keys --
+  async listApiKeys(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/api-keys', this.org(organisationId));
+  }
+  async createApiKey(organisationId: string, name: string, role?: string, expiresAt?: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/api-keys/create', this.org(organisationId, { name, role, expiresAt }));
+  }
+  async revokeApiKey(organisationId: string, keyId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/api-keys/revoke', this.org(organisationId, { keyId }));
+  }
+
+  // -- notifications & support --
+  async listNotifications(unreadOnly = false, limit = 20): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/notifications/list', { page: 1, limit, unreadOnly });
+  }
+  async markNotificationsRead(notificationId?: string): Promise<ApiResponse<unknown>> {
+    return notificationId
+      ? this.client.post('/api/notifications/mark-read', { notificationId })
+      : this.client.post('/api/notifications/mark-all-read', {});
+  }
+  async contactSupport(kind: string, subject: string, message: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/support/request', { kind, subject, message });
+  }
 }

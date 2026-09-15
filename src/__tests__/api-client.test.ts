@@ -114,6 +114,7 @@ describe('ApiClient', () => {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             'X-AI-Source': 'claude_code',
+            'X-Client-Type': 'mcp',
             'Origin': 'https://console.light-cloud.com',
             'Authorization': 'Bearer my-token',
           },

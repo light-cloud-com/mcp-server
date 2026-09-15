@@ -29,6 +29,7 @@ export class ApiClient {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'X-AI-Source': 'claude_code',
+      'X-Client-Type': 'mcp',
       'Origin': this.consoleUrl,
     };
 
@@ -135,7 +136,34 @@ export class ApiClient {
     return this.request<T>('PUT', path, body);
   }
 
-  async delete<T>(path: string): Promise<ApiResponse<T>> {
-    return this.request<T>('DELETE', path);
+  async delete<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+    return this.request<T>('DELETE', path, body);
+  }
+
+  /**
+   * A raw authenticated request for endpoints that stream bytes (database
+   * dumps) or take a raw body (dump imports). The caller owns the Response.
+   */
+  async raw(
+    method: string,
+    path: string,
+    init: { body?: BodyInit; contentType?: string } = {}
+  ): Promise<Response> {
+    const token = getAccessToken();
+    if (!token) throw new Error('Not authenticated. Please use the login tool first.');
+    const headers: Record<string, string> = {
+      'Accept': 'application/json, application/octet-stream',
+      'Authorization': `Bearer ${token}`,
+      'X-AI-Source': 'claude_code',
+      'X-Client-Type': 'mcp',
+      'Origin': this.consoleUrl,
+    };
+    if (init.contentType) headers['Content-Type'] = init.contentType;
+    let response = await fetch(`${this.baseUrl}${path}`, { method, headers, body: init.body });
+    if (response.status === 401 && (await this.refreshToken())) {
+      headers['Authorization'] = `Bearer ${getAccessToken()}`;
+      response = await fetch(`${this.baseUrl}${path}`, { method, headers, body: init.body });
+    }
+    return response;
   }
 }
