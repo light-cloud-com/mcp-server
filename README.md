@@ -32,7 +32,13 @@ Then inside Claude Code, allow all tools without repeated prompts:
 /allowed add mcp__light-cloud__*
 ```
 
-### Claude Desktop
+### Claude Desktop (one-click extension)
+
+Download `light-cloud-<version>.mcpb` from the [latest release](https://github.com/light-cloud-com/mcp-server/releases/latest) and open it — Claude Desktop shows an install dialog. The bundle carries the server and its dependencies; Node ships with Claude Desktop, so nothing else is needed. Settings (API endpoint, console URL) are editable in the extension's page.
+
+Build it yourself: `npm run bundle` → `release/light-cloud-<version>.mcpb` (`manifest.json` in this repository is the generated manifest).
+
+### Claude Desktop (manual config)
 
 Add to your `claude_desktop_config.json`:
 

@@ -8,7 +8,9 @@
     "light-cloud-mcp": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "manifest.json",
+    "icon.png"
   ],
   "scripts": {
     "build": "tsc",
@@ -17,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "bundle": "node scripts/build-mcpb.mjs"
   },
   "keywords": [
     "mcp",

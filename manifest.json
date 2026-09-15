@@ -1,0 +1,252 @@
+{
+  "manifest_version": "0.3",
+  "name": "light-cloud",
+  "display_name": "Light Cloud",
+  "version": "1.4.1",
+  "description": "Sign up, deploy, run and pay for web apps, APIs and databases on Light Cloud from a conversation.",
+  "long_description": "Light Cloud runs your web apps, APIs and databases. This extension gives Claude the whole path from no account to a running app on a paid plan, without the web console:\n\n- **Sign up or sign in** with an email: Claude shows a short code, you approve it at console.light-cloud.com/device from any device (a phone works). A new address gets an account on the free plan. No password, ever.\n- **Deploy** a local folder or a GitHub repository; framework detection, `.env` parsing, a live URL and a console link on every deploy.\n- **Databases and environment variables**: create a database on the shared pool, set its connection string, scale to always-on, attach a custom domain.\n- **Plans and payment**: see the plan and usage pool, switch plan, add a card through a Stripe-hosted link Claude waits on. Card numbers never pass through the extension.\n- **Logs, deployments, rollbacks** for everything you run.\n\nRefusals come back with the next step, so Claude keeps going instead of stopping. Credentials stay on your machine in `~/.lightcloud/credentials.json`; the tools act as your signed-in user and nothing more.",
+  "author": {
+    "name": "Light Cloud",
+    "email": "hello@light-cloud.com",
+    "url": "https://www.light-cloud.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/light-cloud-com/mcp-server"
+  },
+  "homepage": "https://www.light-cloud.com/deploy-with-ai",
+  "documentation": "https://docs.light-cloud.com/deploy-with-ai/mcp-server",
+  "support": "https://www.light-cloud.com/contact",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
+      "env": {
+        "LIGHT_CLOUD_API_URL": "${user_config.api_url}",
+        "LIGHT_CLOUD_CONSOLE_URL": "${user_config.console_url}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "ping"
+    },
+    {
+      "name": "login"
+    },
+    {
+      "name": "logout"
+    },
+    {
+      "name": "connect"
+    },
+    {
+      "name": "connect-status"
+    },
+    {
+      "name": "whoami"
+    },
+    {
+      "name": "get-profile"
+    },
+    {
+      "name": "list-applications"
+    },
+    {
+      "name": "get-application"
+    },
+    {
+      "name": "get-application-status"
+    },
+    {
+      "name": "create-application"
+    },
+    {
+      "name": "create-application-from-upload"
+    },
+    {
+      "name": "deploy-application"
+    },
+    {
+      "name": "delete-application"
+    },
+    {
+      "name": "detect-framework"
+    },
+    {
+      "name": "list-environments"
+    },
+    {
+      "name": "get-environment"
+    },
+    {
+      "name": "create-environment"
+    },
+    {
+      "name": "deploy-environment"
+    },
+    {
+      "name": "delete-environment"
+    },
+    {
+      "name": "get-environment-logs"
+    },
+    {
+      "name": "list-deployments"
+    },
+    {
+      "name": "get-deployment"
+    },
+    {
+      "name": "get-github-install-url"
+    },
+    {
+      "name": "get-github-installation-status"
+    },
+    {
+      "name": "list-github-installations"
+    },
+    {
+      "name": "list-repositories"
+    },
+    {
+      "name": "list-branches"
+    },
+    {
+      "name": "check-repo-access"
+    },
+    {
+      "name": "request-upload-url"
+    },
+    {
+      "name": "complete-upload"
+    },
+    {
+      "name": "get-platform-config"
+    },
+    {
+      "name": "get-cloudrun-config"
+    },
+    {
+      "name": "detect-local-framework"
+    },
+    {
+      "name": "detect-local-git"
+    },
+    {
+      "name": "package-source"
+    },
+    {
+      "name": "upload-and-deploy"
+    },
+    {
+      "name": "get-formatted-status"
+    },
+    {
+      "name": "get-formatted-list"
+    },
+    {
+      "name": "read-project-config"
+    },
+    {
+      "name": "write-project-config"
+    },
+    {
+      "name": "get-billing"
+    },
+    {
+      "name": "list-plans"
+    },
+    {
+      "name": "choose-plan"
+    },
+    {
+      "name": "add-payment-method"
+    },
+    {
+      "name": "payment-method-status"
+    },
+    {
+      "name": "list-databases"
+    },
+    {
+      "name": "get-database"
+    },
+    {
+      "name": "create-database"
+    },
+    {
+      "name": "get-database-connection-string"
+    },
+    {
+      "name": "set-environment-variables"
+    },
+    {
+      "name": "get-environment-variables"
+    },
+    {
+      "name": "set-scaling"
+    },
+    {
+      "name": "add-custom-domain"
+    },
+    {
+      "name": "get-custom-domain-status"
+    }
+  ],
+  "tools_generated": true,
+  "prompts": [
+    {
+      "name": "deploy-from-scratch",
+      "text": "/deploy-from-scratch"
+    }
+  ],
+  "prompts_generated": true,
+  "keywords": [
+    "light-cloud",
+    "deploy",
+    "hosting",
+    "cloud",
+    "devops",
+    "database",
+    "billing",
+    "claude-code",
+    "mcp"
+  ],
+  "license": "MIT",
+  "privacy_policies": [
+    "https://www.light-cloud.com/privacy"
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "user_config": {
+    "api_url": {
+      "type": "string",
+      "title": "API endpoint",
+      "description": "Light Cloud API to talk to. Leave the default unless you were given a staging or self-hosted endpoint.",
+      "default": "https://api.light-cloud.com",
+      "required": false
+    },
+    "console_url": {
+      "type": "string",
+      "title": "Console URL",
+      "description": "The Light Cloud console the sign-in links point at. Change only together with the API endpoint.",
+      "default": "https://console.light-cloud.com",
+      "required": false
+    }
+  }
+}
