@@ -185,3 +185,13 @@ MIT - see [LICENSE](LICENSE)
 - [Light Cloud Platform](https://light-cloud.com)
 - [MCP Documentation](https://modelcontextprotocol.io/)
 - [Report Issues](https://github.com/light-cloud-com/mcp-server/issues)
+
+## Submitting to the Anthropic directory
+
+What the [Software Directory policy](https://support.claude.com/en/articles/13145358-anthropic-software-directory-policy) asks for and where it is:
+
+- Bundle: the `.mcpb` on the [latest release](https://github.com/light-cloud-com/mcp-server/releases/latest); source in this repository.
+- Tool annotations (`title`, `readOnlyHint`, `destructiveHint`) on every tool; descriptions match behaviour; no hidden instructions.
+- Privacy policy: https://www.light-cloud.com/legal/privacy-policy · support: https://www.light-cloud.com/contact · docs: https://docs.light-cloud.com/deploy-with-ai/mcp-server
+- Example prompts: "Connect me to Light Cloud as you@example.com", "Deploy this project to Light Cloud", "Add a Postgres database and set DATABASE_URL on production", "Why did the last deployment fail? Check the logs".
+- Test account with sample data: provided on the submission form.
