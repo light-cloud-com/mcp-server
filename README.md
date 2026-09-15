@@ -14,8 +14,11 @@ Ask Claude: **"Sign me up for Light Cloud as you@example.com"** (or "connect me 
 - **Environment management** - Manage staging, production, and preview environments
 - **GitHub integration** - Deploy directly from GitHub repositories
 - **Upload deployment** - Deploy local projects without GitHub
-- **Real-time logs** - View deployment and application logs
-- **Framework detection** - Auto-detect React, Next.js, Vue, Python, and more
+- **Logs, metrics, rollbacks** - runtime and build logs, environment metrics and activity, one-call rollback
+- **Framework detection** - the uploaded folder is read by the same detector the console uses for a repository
+- **Password-protected sites** - `password` on deploy gates the site at the edge from the first request
+- **Console parity** - settings, folders, stacks, database admin (schema, SQL, dump, import), invoices and spending limits, workspace members, API keys (paid plans), git provider links, notifications, support
+- **An off switch you control** - Settings → Security → Agents & CLI in the console decides what agents may do; enforced on the backend
 
 ## Installation
 
@@ -74,33 +77,26 @@ Claude: [Fetches and displays recent logs]
 
 ## Available Tools
 
-| Tool | Description |
-|------|-------------|
-| `connect` | Sign in — or sign up — with an email from the terminal: shows a code to type on `console.light-cloud.com/device` from any device. No browser needed on this machine, no password ever |
-| `connect-status` | Wait for the `connect` approval (long-polls ~45 s per call) |
-| `login` | Sign in through a browser on this machine (loopback callback) |
-| `logout` | Sign out and clear credentials |
-| `whoami` | Check authentication status |
-| `get-billing` | Plan, card on file, usage pool for a workspace |
-| `list-plans` | Plans with prices and entitlements |
-| `choose-plan` | Switch plan (paid plans need a card; the refusal says so) |
-| `add-payment-method` | Stripe-hosted link to save a card (no card data through the tool) |
-| `payment-method-status` | Wait for the card from `add-payment-method` to be saved |
-| `list-databases` / `get-database` / `create-database` / `get-database-connection-string` | Managed databases (shared pool by default) |
-| `set-environment-variables` / `get-environment-variables` | Environment variables (merge; values masked on read) |
-| `set-scaling` | Instance floor / ceiling (always-on when min ≥ 1) |
-| `add-custom-domain` / `get-custom-domain-status` | Custom domains |
-| `list-applications` | List all applications |
-| `get-application` | Get application details |
-| `create-application` | Create app from GitHub repo |
-| `deploy-application` | Trigger a deployment |
-| `delete-application` | Delete an application |
-| `list-environments` | List environments for an app |
-| `create-environment` | Create a new environment |
-| `deploy-environment` | Deploy to specific environment |
-| `get-environment-logs` | Runtime logs, newest first; optional `hours`, `limit`, `search`, `revision` |
-| `list-repositories` | List connected GitHub repos |
-| `detect-framework` | Auto-detect project framework |
+110 tools: everything the console can do, from a conversation. Console-only by design: the account password, two-factor settings, and the Agents & CLI switch (below). Full reference with a prompt for each tool: https://docs.light-cloud.com/deploy-with-ai/mcp-server#tool-reference
+
+| Group | Tools |
+|-------|-------|
+| Account | `connect`, `connect-status`, `login`, `logout`, `whoami`, `get-profile`, `update-profile`, `list-connected-devices`, `sign-out-device`, `get-agent-access` |
+| Deploy | `upload-and-deploy` (with optional `password`), `create-application`, `create-stack`, `wait-for-deployment`, `deploy-application`, `deploy-environment`, `rollback-deployment`, `set-password-protection`, `detect-local-framework`, `detect-framework`, `detect-local-git`, `list-repo-directories`, `read-project-config`, `write-project-config` |
+| Apps & environments | `list-applications`, `get-application`, `get-application-status`, `get-formatted-list`, `get-formatted-status`, `update-application`, `rename-application`, `move-application`, `delete-application`, `list-environments`, `get-environment`, `create-environment`, `update-environment`, `delete-environment`, `set-scaling`, `get-environment-metrics`, `get-environment-activity`, `get-environment-runtime`, `list-folders`, `create-folder`, `delete-folder` |
+| Logs & deployments | `get-environment-logs`, `list-deployments`, `get-deployment`, `get-build-logs` |
+| Variables, domains | `set-environment-variables`, `get-environment-variables`, `add-custom-domain`, `get-custom-domain-status`, `retry-custom-domain`, `remove-custom-domain` |
+| Databases | `list-databases`, `get-database`, `create-database`, `update-database`, `delete-database`, `get-database-connection-string`, `rotate-database-password`, `get-database-schema`, `query-database`, `get-database-metrics`, `dump-database`, `import-database` |
+| Plan & billing | `get-billing`, `list-plans`, `choose-plan`, `add-payment-method`, `payment-method-status`, `remove-payment-method`, `get-usage`, `get-usage-history`, `list-invoices`, `get-invoice`, `retry-invoice`, `get-outstanding-invoices`, `get-spending-limit`, `set-spending-limit`, `get-billing-details`, `set-billing-details` |
+| Workspace & members | `create-workspace`, `list-members`, `invite-member`, `remove-member`, `set-member-role`, `list-roles`, `list-api-keys`, `create-api-key` (paid plans), `revoke-api-key` |
+| Git providers | `get-github-installation-status`, `get-github-install-url`, `list-github-installations`, `list-repositories`, `list-branches`, `check-repo-access`, `connect-git-provider` (GitLab / Bitbucket, one link), `list-provider-repositories` |
+| Other | `list-notifications`, `mark-notifications-read`, `contact-support`, `ping`, `get-platform-config`, `get-cloudrun-config`, and the low-level upload steps (`package-source`, `request-upload-url`, `complete-upload`, `create-application-from-upload`) |
+
+Prompt: `deploy-from-scratch` — asks the two things a folder cannot answer (workspace, public or password-protected), then deploys and hands back the URL.
+
+## Turning agents off
+
+Settings → Security → **Agents & CLI** in the console decides what this server, the CLI and the VS Code extension may do on an account: a master switch, then groups (deploy, delete, settings, databases, billing, workspace, API keys). Reads are always allowed. The backend enforces it from the session's own client claim, fixed when the session was issued, so a header cannot get around it — and the switch can only be changed from the console. A refusal comes back as `AGENT_ACCESS_DISABLED` or `AGENT_ACTION_BLOCKED` with the place to change it; the server's instructions tell the assistant not to retry.
 
 ## Authentication
 
