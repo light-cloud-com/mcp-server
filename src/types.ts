@@ -49,6 +49,7 @@ export interface CreateApplicationFromUploadRequest {
   runtime?: Runtime;
   buildCommand?: string;
   outputDirectory?: string;
+  containerPort?: number;
   environmentVars?: Record<string, string>;
 }
 
@@ -250,6 +251,12 @@ export interface UploadCompleteResponse {
   detectedDeploymentType?: string;
   detectedBuildCommand?: string;
   detectedOutputDirectory?: string;
+  detectedContainerPort?: number | null;
+  /** 'server' when the backend inspected the archive with the console's detector. */
+  detectionSource?: 'server' | 'client';
+  detectionConfidence?: 'high' | 'medium' | 'low' | null;
+  detectedFiles?: string[];
+  configWarning?: string | null;
   completedAt?: string;
 }
 

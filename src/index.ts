@@ -1035,6 +1035,22 @@ server.tool(
         };
       }
 
+      // The backend inspects the archive with the same detector the console
+      // uses for repositories; its reading beats the local one.
+      const server = completeResult.data?.detectionSource === 'server' ? completeResult.data : undefined;
+      const detection = {
+        framework: server?.detectedFramework ?? frameworkDetection.framework,
+        runtime: (server?.detectedRuntime as typeof frameworkDetection.runtime | undefined) ?? frameworkDetection.runtime,
+        deploymentType: (server?.detectedDeploymentType ?? frameworkDetection.deploymentType) as typeof frameworkDetection.deploymentType,
+        buildCommand: server?.detectedBuildCommand ?? frameworkDetection.buildCommand,
+        outputDirectory: server?.detectedOutputDirectory ?? frameworkDetection.outputDirectory,
+        containerPort: server?.detectedContainerPort ?? undefined,
+        source: server ? 'server' : 'local',
+        confidence: server?.detectionConfidence ?? undefined,
+        detectedFiles: server?.detectedFiles ?? undefined,
+        configWarning: server?.configWarning ?? undefined,
+      };
+
       // Step 8: Create or deploy application
       let appResult;
       const appName = name || path.basename(projectDir);
@@ -1053,11 +1069,12 @@ server.tool(
           targetOrganisationId: organisation_id,
           name: appName,
           uploadId: uploadUrlResult.data.uploadId,
-          deploymentType: frameworkDetection.deploymentType,
-          framework: frameworkDetection.framework,
-          runtime: frameworkDetection.runtime,
-          buildCommand: frameworkDetection.buildCommand,
-          outputDirectory: frameworkDetection.outputDirectory,
+          deploymentType: detection.deploymentType,
+          framework: detection.framework,
+          runtime: detection.runtime,
+          buildCommand: detection.buildCommand,
+          outputDirectory: detection.deploymentType === 'static' ? detection.outputDirectory : undefined,
+          containerPort: detection.deploymentType === 'container' ? detection.containerPort : undefined,
         });
       }
 
@@ -1072,8 +1089,8 @@ server.tool(
         organisationId: organisation_id,
         applicationId: 'id' in appResult.data ? appResult.data.id : appId,
         applicationName: appName,
-        framework: frameworkDetection.framework,
-        deploymentType: frameworkDetection.deploymentType,
+        framework: detection.framework,
+        deploymentType: detection.deploymentType,
       };
       writeConfig(newConfig, projectDir);
 
@@ -1088,7 +1105,7 @@ server.tool(
             action: appId ? 'redeployed' : 'created',
             application: created,
             detection: {
-              framework: frameworkDetection,
+              ...detection,
               git: gitDetection,
             },
             package: {
