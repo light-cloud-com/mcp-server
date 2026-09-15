@@ -8,7 +8,7 @@ import type {
   FormattedApplicationRow,
 } from '../types.js';
 
-const DASHBOARD_BASE_URL = 'https://app.lightcloud.dev';
+export const DASHBOARD_BASE_URL = process.env.LIGHT_CLOUD_CONSOLE_URL || 'https://console.light-cloud.com';
 
 /**
  * Get emoji for deployment status
@@ -84,7 +84,7 @@ export function formatApplicationRow(app: Application, organisationSlug?: string
     statusEmoji: getStatusEmoji(app.status),
     type: app.deployment_type,
     url: app.url,
-    dashboardUrl: `${DASHBOARD_BASE_URL}/${organisationSlug || 'app'}/${app.slug}`,
+    dashboardUrl: `${DASHBOARD_BASE_URL}/applications/${app.id}`,
   };
 }
 
@@ -174,7 +174,7 @@ export function generateFormattedStatus(app: Application, organisationSlug?: str
   lines.push('');
 
   // Dashboard link
-  const dashboardUrl = `${DASHBOARD_BASE_URL}/${organisationSlug || 'app'}/${app.slug}`;
+  const dashboardUrl = `${DASHBOARD_BASE_URL}/applications/${app.id}`;
   lines.push(`[Open in Dashboard](${dashboardUrl})`);
   lines.push('');
 

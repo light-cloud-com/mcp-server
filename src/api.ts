@@ -217,6 +217,24 @@ export class LightCloudApi {
 
   // ============ Environments ============
 
+  /**
+   * Visitor password gate on an environment. `password` undefined or
+   * empty turns the gate off; anything else sets (or rotates) it.
+   */
+  async setEnvironmentPassword(
+    organisationId: string,
+    environmentId: string,
+    password?: string
+  ): Promise<ApiResponse<{ passwordEnabled: boolean }>> {
+    const enabled = Boolean(password);
+    return this.client.post<{ passwordEnabled: boolean }>('/api/environments/password', {
+      targetOrganisationId: organisationId,
+      environmentId,
+      enabled,
+      ...(enabled ? { password } : {}),
+    });
+  }
+
   async listEnvironments(organisationId: string, applicationId: string): Promise<ApiResponse<Environment[]>> {
     return this.client.post<Environment[]>('/api/environments', {
       targetOrganisationId: organisationId,

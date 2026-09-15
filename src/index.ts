@@ -16,9 +16,10 @@ import {
 import { detectLocalFramework } from "./detection/framework-detector.js";
 import { detectLocalGit } from "./detection/git-detector.js";
 import { packageSource } from "./upload/packager.js";
+import { describeStorageUploadFailure } from "./upload/storage-error.js";
 import { readConfig, writeConfig } from "./config/config-manager.js";
-import { generateFormattedStatus, generateFormattedList } from "./utils/formatting.js";
-import type { LightCloudConfig } from "./types.js";
+import { generateFormattedStatus, generateFormattedList, DASHBOARD_BASE_URL } from "./utils/formatting.js";
+import type { LightCloudConfig, Application, Environment } from "./types.js";
 import * as path from "path";
 
 // Create MCP server instance
@@ -32,7 +33,7 @@ const SERVER_INSTRUCTIONS = [
   "",
   "BILLING: `get-billing` (plan, card, usage pool), `list-plans`, `choose-plan`. A card is added with `add-payment-method` (Stripe-hosted link the user opens anywhere; poll `payment-method-status`). No card number ever passes through a tool.",
   "",
-  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling and logs have their own tools.",
+  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; the free plan is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
   "",
   "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. The `deploy-from-scratch` prompt walks the full path in order.",
 ].join("\n");
@@ -86,6 +87,46 @@ function formatResponse(result: { success: boolean; data?: unknown; error?: { co
   }
   return text(formatError(result.error));
 }
+
+type CreatedApp = Application & {
+  environments?: Environment[];
+  dashboardUrl?: string;
+  expectedDeployedUrl?: string;
+};
+
+/**
+ * Shared tail of create-application and upload-and-deploy: gate the first
+ * environment behind a password when one was given, and answer with the
+ * few fields the agent needs to hand the site over — where it will live,
+ * where to watch it, and what to call next.
+ */
+async function finishCreate(organisationId: string, app: CreatedApp, password?: string) {
+  const environment = app.environments?.[0];
+  let passwordProtected = false;
+  let passwordError: string | undefined;
+  if (password && environment) {
+    const gate = await getApi().setEnvironmentPassword(organisationId, environment.id, password);
+    if (gate.success) passwordProtected = true;
+    else passwordError = gate.error?.message;
+  }
+  const url = app.expectedDeployedUrl || environment?.url || app.url;
+  return {
+    id: app.id,
+    name: app.name,
+    slug: app.slug,
+    status: app.status,
+    environmentId: environment?.id,
+    url,
+    dashboardUrl: app.dashboardUrl || `${DASHBOARD_BASE_URL}/applications/${app.id}`,
+    passwordProtected,
+    ...(passwordError ? { passwordError } : {}),
+    nextStep: `Call wait-for-deployment with application_id ${app.id} — it returns when the site is live.`,
+  };
+}
+
+const LIVE_STATUSES = new Set(["deployed", "healthy"]);
+const DEAD_STATUSES = new Set(["failed", "error", "cancelled"]);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Tool annotations (MCP spec): what a host may assume before calling.
 // readOnlyHint: no state change. destructiveHint: irreversible. openWorldHint:
@@ -146,6 +187,8 @@ const ANNOTATIONS: Record<string, { title: string; readOnlyHint: boolean; destru
   "get-environment-variables": { title: "Get environment variables", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "set-scaling": { title: "Set scaling", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "add-custom-domain": { title: "Add custom domain", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "set-password-protection": { title: "Set password protection", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "wait-for-deployment": { title: "Wait for deployment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "get-custom-domain-status": { title: "Get custom domain status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
 };
 
@@ -367,6 +410,7 @@ server.tool(
     min_instances: z.number().int().min(0).optional().describe("Minimum running instances; 0 scales to zero when idle (container apps)"),
     max_instances: z.number().int().min(1).optional().describe("Maximum instances (container apps)"),
     auto_deploy_on_push: z.boolean().optional().describe("Redeploy automatically on every push to the deployed branch"),
+    password: z.string().min(6).max(128).optional().describe("Visitor password to gate the site behind from the first deploy (6-128 characters). Omit for a public site."),
   },
   ANNOTATIONS["create-application"],
   async ({
@@ -388,6 +432,7 @@ server.tool(
     min_instances,
     max_instances,
     auto_deploy_on_push,
+    password,
   }) => {
     const result = await getApi().createApplication({
       targetOrganisationId: organisation_id,
@@ -409,7 +454,8 @@ server.tool(
       maxInstances: max_instances,
       autoDeployOnPush: auto_deploy_on_push,
     });
-    return formatResponse(result);
+    if (!result.success || !result.data) return formatResponse(result);
+    return formatResponse({ success: true, data: await finishCreate(organisation_id, result.data as CreatedApp, password) });
   }
 );
 
@@ -922,9 +968,10 @@ server.tool(
     directory: z.string().optional().describe("Path to project directory. Defaults to current working directory."),
     application_id: z.string().optional().describe("Existing application ID to redeploy to"),
     name: z.string().optional().describe("Application name. Defaults to folder name for new apps."),
+    password: z.string().min(6).max(128).optional().describe("Visitor password to gate the site behind (6-128 characters). Omit for a public site. On a redeploy the existing setting is kept unless this is given."),
   },
   ANNOTATIONS["upload-and-deploy"],
-  async ({ organisation_id, directory, application_id, name }) => {
+  async ({ organisation_id, directory, application_id, name, password }) => {
     try {
       const projectDir = directory || process.cwd();
 
@@ -969,7 +1016,7 @@ server.tool(
 
       if (!uploadResponse.ok) {
         return {
-          content: [{ type: "text", text: `Error uploading source: ${uploadResponse.statusText}` }],
+          content: [{ type: "text", text: `Error uploading source: ${describeStorageUploadFailure(uploadResponse)}` }],
         };
       }
 
@@ -1030,6 +1077,8 @@ server.tool(
       };
       writeConfig(newConfig, projectDir);
 
+      const created = await finishCreate(organisation_id, appResult.data as CreatedApp, password);
+
       // Return success response
       return {
         content: [{
@@ -1037,7 +1086,7 @@ server.tool(
           text: JSON.stringify({
             success: true,
             action: appId ? 'redeployed' : 'created',
-            application: appResult.data,
+            application: created,
             detection: {
               framework: frameworkDetection,
               git: gitDetection,
@@ -1056,6 +1105,59 @@ server.tool(
         content: [{ type: "text", text: `Error in upload-and-deploy: ${error instanceof Error ? error.message : String(error)}` }],
       };
     }
+  }
+);
+
+// ============ Hand-over Tools ============
+
+server.tool(
+  "wait-for-deployment",
+  "Block until an application's current deployment finishes, then return the live URL. Call this right after upload-and-deploy or create-application instead of polling status yourself. Returns early with status 'building' if the timeout passes — call it again.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    application_id: z.string().describe("The application ID"),
+    timeout_seconds: z.number().int().min(10).max(300).optional().describe("How long to wait before returning the in-progress status (default 50, keeps within client tool timeouts)"),
+  },
+  ANNOTATIONS["wait-for-deployment"],
+  async ({ organisation_id, application_id, timeout_seconds }) => {
+    const deadline = Date.now() + (timeout_seconds ?? 50) * 1000;
+    let last: CreatedApp | undefined;
+    while (Date.now() < deadline) {
+      const result = await getApi().getApplication(organisation_id, application_id);
+      if (!result.success || !result.data) return text(formatError(result.error));
+      last = result.data as CreatedApp;
+      const environment = last.environments?.[0];
+      const status = String(environment?.status || last.status || "");
+      if (LIVE_STATUSES.has(status) || DEAD_STATUSES.has(status)) break;
+      await sleep(5000);
+    }
+    const environment = last?.environments?.[0];
+    const status = String(environment?.status || last?.status || "unknown");
+    const url = environment?.url || last?.url;
+    const dashboardUrl = `${DASHBOARD_BASE_URL}/applications/${application_id}`;
+    if (LIVE_STATUSES.has(status)) {
+      return text(JSON.stringify({ status: "live", url, dashboardUrl, environmentId: environment?.id }, null, 2));
+    }
+    if (DEAD_STATUSES.has(status)) {
+      return text(JSON.stringify({ status: "failed", url, dashboardUrl, environmentId: environment?.id, nextStep: `Call get-environment-logs with environment_id ${environment?.id} to see why.` }, null, 2));
+    }
+    return text(JSON.stringify({ status: "building", detail: status, url, dashboardUrl, environmentId: environment?.id, nextStep: "Still building — call wait-for-deployment again." }, null, 2));
+  }
+);
+
+server.tool(
+  "set-password-protection",
+  "Gate a site behind a visitor password, rotate it, or make the site public again. Takes effect on the next request. Pass no password to remove the gate.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    environment_id: z.string().describe("The environment ID"),
+    password: z.string().min(6).max(128).optional().describe("New visitor password (6-128 characters). Omit to make the site public."),
+  },
+  ANNOTATIONS["set-password-protection"],
+  async ({ organisation_id, environment_id, password }) => {
+    const result = await getApi().setEnvironmentPassword(organisation_id, environment_id, password);
+    if (!result.success) return text(formatError(result.error));
+    return text(password ? "Password protection is on. Visitors will be asked for the password on their next request." : "Password protection is off. The site is public.");
   }
 );
 
@@ -1530,15 +1632,15 @@ server.prompt(
         content: {
           type: "text",
           text: [
-            "Deploy the project in the current directory to Light Cloud using the light-cloud MCP tools. Follow this order and stop to ask me only when a decision is mine to make (which plan, whether to pay).",
+            "Deploy the project in the current directory to Light Cloud using the light-cloud MCP tools. Ask me everything you need in ONE message before touching anything: which workspace (only if I belong to several), and whether the site should be public or password-protected (and the password if so). Do not ask about plans or payment unless a tool refuses; the free plan is the default.",
             "",
             "1. `whoami`. If not signed in: `connect` with " + (email ? `the email ${email}` : "my email (ask me for it)") + ", show me the code and link, then `connect-status` until approved.",
             "2. `get-billing` for the workspace. On the free plan, continue. If a later step is refused with PLAN_ENTITLEMENT or POOL_EXHAUSTED, show me `list-plans`, ask which plan, then `add-payment-method` (if no card) + `payment-method-status` until saved, and `choose-plan`.",
             "3. `detect-local-framework` and `detect-local-git` in the project directory.",
-            "4. Git-backed and pushed to GitHub: `get-github-installation-status`; if not installed, give me `get-github-install-url` and wait; then `create-application` from the repository. Otherwise: `package-source` + `upload-and-deploy`.",
+            "4. Git-backed and pushed to GitHub: `get-github-installation-status`; if not installed, give me `get-github-install-url` and wait; then `create-application` from the repository. Otherwise `upload-and-deploy` (it packages the folder itself). Pass `password` to either when I asked for a protected site.",
             "5. If detection says the framework needs a database: `create-database` (shared-dev), poll `get-database` until ready, `get-database-connection-string`, and `set-environment-variables` with it under the variable name the framework expects.",
             "6. Any other variables the app needs: ask me, then `set-environment-variables`.",
-            "7. `deploy-environment` if anything changed after creation, then `get-formatted-status` until the deployment is ready. Give me the URL.",
+            "7. `deploy-environment` if anything changed after creation, then `wait-for-deployment`. Finish with exactly this: the live URL on its own line, plus the password on the next line if the site is protected. No other links, no infrastructure details.",
             "",
             "Every refusal from a tool that says `Next step: …` means call that tool, then retry. Never ask me for a password or card number — the tools open a browser link for those.",
           ].join("\n"),

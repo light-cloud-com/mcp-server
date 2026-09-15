@@ -1,6 +1,6 @@
 {
   "name": "@light-cloud/mcp-server",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "MCP server for Light Cloud Platform - Deploy and manage applications with Claude",
   "type": "module",
   "main": "dist/index.js",

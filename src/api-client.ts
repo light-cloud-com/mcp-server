@@ -2,6 +2,7 @@
 
 import { ApiResponse } from './types.js';
 import { getAccessToken, isAuthenticated, storeCredentials, getRefreshToken } from './token-storage.js';
+import { sanitizeForAgent } from './utils/sanitize.js';
 
 export class ApiClient {
   private baseUrl: string;
@@ -76,7 +77,7 @@ export class ApiClient {
       }
 
       const data = await response.json();
-      return { success: true, data };
+      return { success: true, data: sanitizeForAgent(data) };
 
     } catch (error) {
       return {
