@@ -7,6 +7,12 @@ import { ApiClient } from "./api-client.js";
 import { LightCloudApi } from "./api.js";
 import { startNonBlockingLoginFlow, logout as performLogout } from "./auth.js";
 import { isAuthenticated } from "./token-storage.js";
+import {
+  startDeviceConnect,
+  waitForConnect,
+  getConnectState,
+  describePending,
+} from "./device-auth.js";
 import { detectLocalFramework } from "./detection/framework-detector.js";
 import { detectLocalGit } from "./detection/git-detector.js";
 import { packageSource } from "./upload/packager.js";
@@ -16,34 +22,69 @@ import type { LightCloudConfig } from "./types.js";
 import * as path from "path";
 
 // Create MCP server instance
-const server = new McpServer({
-  name: "light-cloud",
-  version: "1.0.0",
-});
+// Sent to the client at initialize: what this server can do that a model
+// would not guess from tool names alone — above all that an account can be
+// created from here, so "sign me up for Light Cloud" maps to `connect`.
+const SERVER_INSTRUCTIONS = [
+  "Light Cloud: deploy and run web apps, APIs and databases. This server covers the whole path from no account to a running app on a paid plan, without the web console.",
+  "",
+  "ACCOUNTS: `connect` with an email signs the user in AND creates the account if the email has none (free plan, no password, no form). Use it whenever the user has no Light Cloud account, wants to sign up, or is not signed in. It prints a short code; the user approves it at console.light-cloud.com/device on any device; call `connect-status` until approved. Never ask the user for a password. `login` is the alternative that opens a browser on this machine.",
+  "",
+  "BILLING: `get-billing` (plan, card, usage pool), `list-plans`, `choose-plan`. A card is added with `add-payment-method` (Stripe-hosted link the user opens anywhere; poll `payment-method-status`). No card number ever passes through a tool.",
+  "",
+  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling and logs have their own tools.",
+  "",
+  "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. The `deploy-from-scratch` prompt walks the full path in order.",
+].join("\n");
+
+const server = new McpServer(
+  {
+    name: "light-cloud",
+    version: "1.4.1",
+  },
+  { instructions: SERVER_INSTRUCTIONS }
+);
 
 // Initialize API client and API wrapper
+let apiClient: ApiClient;
 let api: LightCloudApi;
+
+function getClient(): ApiClient {
+  if (!apiClient) apiClient = new ApiClient();
+  return apiClient;
+}
 
 function getApi(): LightCloudApi {
   if (!api) {
-    const client = new ApiClient();
-    api = new LightCloudApi(client);
+    api = new LightCloudApi(getClient());
   }
   return api;
 }
 
+type ToolResult = { content: Array<{ type: "text"; text: string }> };
+
+const text = (value: string): ToolResult => ({ content: [{ type: "text", text: value }] });
+
+/**
+ * A refusal the backend tagged with a next step ("PLAN_ENTITLEMENT →
+ * choose-plan", "PAYMENT_METHOD_REQUIRED → add-payment-method") comes back
+ * as a one-line instruction, so the agent acts on it instead of giving up.
+ */
+function formatError(error?: { code: string; message: string; nextStep?: string }): string {
+  const code = error?.code || "UNKNOWN";
+  const message = error?.message || "Unknown error";
+  const hint = error?.nextStep
+    ? `\nNext step: call the \`${error.nextStep}\` tool, then retry this one.`
+    : "";
+  return `Error: ${message} (${code})${hint}`;
+}
+
 // Helper to format API responses
-function formatResponse(result: { success: boolean; data?: unknown; error?: { code: string; message: string } }): {
-  content: Array<{ type: "text"; text: string }>;
-} {
+function formatResponse(result: { success: boolean; data?: unknown; error?: { code: string; message: string; nextStep?: string } }): ToolResult {
   if (result.success) {
-    return {
-      content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
-    };
+    return text(JSON.stringify(result.data, null, 2));
   }
-  return {
-    content: [{ type: "text", text: `Error: ${result.error?.message || "Unknown error"} (${result.error?.code || "UNKNOWN"})` }],
-  };
+  return text(formatError(result.error));
 }
 
 // ============ Health Check ============
@@ -56,7 +97,7 @@ server.tool("ping", "Health check - returns pong", {}, async () => {
 
 server.tool(
   "login",
-  "Sign in to Light Cloud. Opens a browser window for authentication.",
+  "Sign in to Light Cloud through a browser on THIS machine (loopback callback). Prefer `connect` — it works without a local browser and also creates the account for a new email.",
   {},
   async () => {
     if (isAuthenticated()) {
@@ -92,23 +133,80 @@ server.tool(
 );
 
 server.tool(
+  "connect",
+  "SIGN UP or sign in to Light Cloud with an email — the only account step needed. An email with no account gets one " +
+  "(free plan, no password, no form) when the user approves a short code at console.light-cloud.com/device from any device; " +
+  "an existing account just signs in. No browser is needed on this machine. Then call connect-status to wait for the approval. " +
+  "Use this whenever the user is not signed in, has no account, or asks to sign up / create an account / get started.",
+  {
+    email: z.string().describe("The email address to sign in (or sign up) with"),
+  },
+  async ({ email }) => {
+    if (isAuthenticated()) {
+      const result = await getApi().getProfile();
+      if (result.success && result.data) {
+        return text(`Already signed in as ${result.data.email}. Use logout first to switch accounts.`);
+      }
+    }
+    const started = await startDeviceConnect(getClient(), email.trim().toLowerCase());
+    if (!started.ok) return text(`Error: ${started.message}`);
+    return text(describePending(started.state));
+  }
+);
+
+server.tool(
+  "connect-status",
+  "Wait for a pending `connect` sign-in to be approved (up to ~45 seconds per call). " +
+  "Call again while it reports pending. Returns the signed-in account once approved.",
+  {},
+  async () => {
+    const state = await waitForConnect(45_000);
+    switch (state.phase) {
+      case "idle":
+        return text(isAuthenticated()
+          ? "No sign-in is pending; you are signed in. Use whoami for details."
+          : "No sign-in is pending. Call connect with an email address first.");
+      case "pending":
+        return text(`Still waiting for approval of code ${state.userCode} at ${state.verificationUrl}. Call connect-status again.`);
+      case "approved": {
+        const profile = await getApi().getProfile();
+        const orgs = profile.success && profile.data
+          ? profile.data.organisations.map((o) => `  - ${o.name} (id: ${o.id}, ${o.role})`).join("\n")
+          : "  (could not load workspaces yet — call whoami)";
+        return text(
+          `${state.newAccount ? "Account created and signed in" : "Signed in"} as ${state.email}.\n\nWorkspaces:\n${orgs}\n\n` +
+          (state.newAccount
+            ? "The workspace is on the free plan; a card is only needed for a paid plan (see list-plans / add-payment-method)."
+            : "Use get-billing to check the plan before creating resources.")
+        );
+      }
+      case "denied":
+        return text(`Sign-in for ${state.email} was refused in the browser. Call connect again if that was a mistake.`);
+      case "expired":
+        return text(`The code for ${state.email} expired before it was approved. Call connect again for a new one.`);
+      case "error":
+        return text(`Error: ${state.message}`);
+    }
+  }
+);
+
+server.tool(
   "whoami",
   "Check authentication status and show current user",
   {},
   async () => {
     if (!isAuthenticated()) {
-      return {
-        content: [{
-          type: "text",
-          text: "Not logged in. Use the login tool to authenticate."
-        }]
-      };
+      const pending = getConnectState();
+      if (pending.phase === "pending") {
+        return text(`Not signed in yet — waiting for code ${pending.userCode} to be approved at ${pending.verificationUrl}. Call connect-status.`);
+      }
+      return text("Not signed in. Call connect with your email (works anywhere), or login (opens a browser on this machine).");
     }
 
     const result = await getApi().getProfile();
     if (result.success && result.data) {
       const user = result.data;
-      const orgs = user.organisations.map(o => `  - ${o.name} (${o.slug}) - ${o.role}`).join('\n');
+      const orgs = user.organisations.map(o => `  - ${o.name} (id: ${o.id}, ${o.slug}) - ${o.role}`).join('\n');
       return {
         content: [{
           type: "text",
@@ -1001,6 +1099,337 @@ server.tool(
       };
     }
   }
+);
+
+// ============ Billing Tools ============
+
+const money = (value: number) => `$${value.toFixed(2)}`;
+
+server.tool(
+  "get-billing",
+  "Plan, card on file and usage pool for a workspace. Call before creating resources: it says whether a card or a plan change is needed.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+  },
+  async ({ organisation_id }) => {
+    const [summary, plans] = await Promise.all([
+      getApi().getOwnerBillingSummary(),
+      getApi().getPlans(organisation_id),
+    ]);
+    if (!plans.success || !plans.data) return text(formatError(plans.error));
+
+    const p = plans.data.data;
+    const current = p.plans.find((plan) => plan.id === (p.currentPlanId ?? "hobby"));
+    const card = summary.success && summary.data ? summary.data.data.payment_method : null;
+    const lines = [
+      `Plan: ${current ? `${current.name} (${current.id}) — ${money(current.price)}/month` : p.currentPlanId ?? "free"}`,
+      p.pendingPlanId ? `Pending change at next cycle: ${p.pendingPlanId}` : null,
+      `Card on file: ${card ? `${card.brand} •••• ${card.last4}` : "none"}`,
+      `Usage pool this cycle: ${money(p.pool.spent)} of ${money(p.pool.total)} used (${Math.round(p.pool.pct)}%)` +
+        (p.pool.overage > 0 ? `, overage ${money(p.pool.overage)}` : ""),
+      p.hardStopped
+        ? "STATUS: free-plan pool exhausted — projects are paused until an upgrade (choose-plan) or the next cycle."
+        : null,
+      summary.success && summary.data?.data.billing_cycle.next_billing_date
+        ? `Next invoice: ${summary.data.data.billing_cycle.next_billing_date.slice(0, 10)}`
+        : null,
+      "",
+      current && current.price === 0
+        ? "Paid plans need a card: add-payment-method, then choose-plan."
+        : "Use list-plans to compare plans; choose-plan to change.",
+    ].filter((line): line is string => line !== null);
+    return text(lines.join("\n"));
+  }
+);
+
+server.tool(
+  "list-plans",
+  "The plans a workspace can be on, with prices and what each includes (sizes, always-on, database tiers).",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+  },
+  async ({ organisation_id }) => {
+    const result = await getApi().getPlans(organisation_id);
+    if (!result.success || !result.data) return text(formatError(result.error));
+    const p = result.data.data;
+    const rows = p.plans.map((plan) => {
+      const marker = plan.id === (p.currentPlanId ?? "hobby") ? " (current)" : "";
+      const entitlements = plan.entitlements ? `\n    includes: ${JSON.stringify(plan.entitlements)}` : "";
+      return `- ${plan.id}: ${plan.name}${marker} — ${money(plan.price)}/month${entitlements}`;
+    });
+    return text(`Plans:\n${rows.join("\n")}\n\nchoose-plan(plan_id) to switch. Paid plans need a card on file (add-payment-method).`);
+  }
+);
+
+server.tool(
+  "choose-plan",
+  "Put a workspace on a plan. Free plan: immediate, no card. Paid plan: charges the card on file for the first month; " +
+  "without a card the tool says so — call add-payment-method first. Downgrades take effect at the next cycle.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    plan_id: z.string().describe("Plan id from list-plans (e.g. hobby, starter, pro)"),
+  },
+  async ({ organisation_id, plan_id }) => {
+    const result = await getApi().choosePlan(organisation_id, plan_id);
+    if (!result.success || !result.data) return text(formatError(result.error));
+    const r = result.data.data;
+    if (r.pendingPlanId) {
+      return text(`Downgrade scheduled: ${r.planId} until ${r.effectiveAt?.slice(0, 10) ?? "the next cycle"}, then ${r.pendingPlanId}.`);
+    }
+    const charge = r.proratedCharge > 0 ? ` Charged ${money(r.proratedCharge)} (${r.chargeStatus}).` : "";
+    return text(`Workspace is now on plan ${r.planId}.${charge}`);
+  }
+);
+
+// One card-setup link at a time per MCP process; status polls read it back.
+let pendingCheckout: { organisationId: string; sessionId: string; url: string; expiresAt: number; planId?: string } | null = null;
+
+server.tool(
+  "add-payment-method",
+  "Save a card for a workspace's owner through a Stripe-hosted page. Prints a link to open on any device " +
+  "(no card details ever pass through this tool). Then call payment-method-status to wait for the card to be saved. " +
+  "Optionally names a plan to switch to once the card is on file.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    plan_id: z.string().optional().describe("Plan to switch to once the card is saved (from list-plans)"),
+  },
+  async ({ organisation_id, plan_id }) => {
+    const session = await getApi().createCheckoutSession(organisation_id);
+    if (!session.success || !session.data) {
+      if (session.error?.status === 404) {
+        return text("Error: hosted card setup is not enabled on this Light Cloud environment yet. Add a card in the console under Billing → General.");
+      }
+      return text(formatError(session.error));
+    }
+    const { url, sessionId, expiresAt } = session.data.data;
+    pendingCheckout = {
+      organisationId: organisation_id,
+      sessionId,
+      url,
+      expiresAt: new Date(expiresAt).getTime(),
+      planId: plan_id,
+    };
+    return text([
+      "Open this link on any device to save a card (Stripe-hosted; the card never passes through here):",
+      "",
+      url,
+      "",
+      `The link expires in ${Math.round((pendingCheckout.expiresAt - Date.now()) / 60000)} minutes. Call payment-method-status to wait for it.`,
+    ].join("\n"));
+  }
+);
+
+server.tool(
+  "payment-method-status",
+  "Wait for the card from add-payment-method to be saved (up to ~45 seconds per call; call again while it reports open). " +
+  "Switches the plan afterwards if add-payment-method was given one.",
+  {},
+  async () => {
+    if (!pendingCheckout) {
+      return text("No card setup is pending. Call add-payment-method first (or get-billing to see the card on file).");
+    }
+    const { organisationId, sessionId, url, planId } = pendingCheckout;
+    const deadline = Math.min(Date.now() + 45_000, pendingCheckout.expiresAt);
+    let last: "open" | "complete" | "expired" = "open";
+    for (;;) {
+      const status = await getApi().getCheckoutSessionStatus(organisationId, sessionId);
+      if (status.success && status.data) {
+        last = status.data.data.status;
+        if (last === "complete") {
+          pendingCheckout = null;
+          const card = status.data.data.paymentMethod;
+          let summary = `Card saved${card ? `: ${card.brand} •••• ${card.last4}` : ""}.`;
+          if (planId) {
+            const chosen = await getApi().choosePlan(organisationId, planId);
+            summary += chosen.success && chosen.data
+              ? ` Workspace is now on plan ${chosen.data.data.planId}${chosen.data.data.proratedCharge > 0 ? ` (charged ${money(chosen.data.data.proratedCharge)})` : ""}.`
+              : ` Plan change failed: ${formatError(chosen.error)}`;
+          }
+          return text(summary);
+        }
+        if (last === "expired") break;
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
+    if (last === "expired" || Date.now() >= pendingCheckout.expiresAt) {
+      pendingCheckout = null;
+      return text("The card setup link expired before a card was saved. Call add-payment-method again for a new link.");
+    }
+    return text(`No card saved yet. The link is still open:\n${url}\nCall payment-method-status again to keep waiting.`);
+  }
+);
+
+// ============ Database Tools ============
+
+server.tool(
+  "list-databases",
+  "List the databases in a workspace",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+  },
+  async ({ organisation_id }) => formatResponse(await getApi().listDatabases(organisation_id))
+);
+
+server.tool(
+  "get-database",
+  "Details and status of a database (provisioning state, engine, tier, host)",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    database_id: z.string().describe("The database ID"),
+  },
+  async ({ organisation_id, database_id }) => formatResponse(await getApi().getDatabase(organisation_id, database_id))
+);
+
+server.tool(
+  "create-database",
+  "Create a managed database. Default: a PostgreSQL database on the shared pool (tier shared-dev, included in every plan). " +
+  "Dedicated tiers (dev, starter, pro …) depend on the plan — a refusal names the next step. " +
+  "Provisioning is asynchronous: poll get-database until status is ready, then get-database-connection-string.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    name: z.string().describe("Database name (letters, digits, dashes)"),
+    engine: z.enum(["postgresql", "mysql"]).optional().describe("Engine, default postgresql"),
+    tier: z.string().optional().describe("shared-dev (default) or a dedicated Cloud SQL tier such as db-f1-micro"),
+    project_id: z.string().optional().describe("Folder (project) to create it in; default folder when omitted"),
+  },
+  async ({ organisation_id, name, engine, tier, project_id }) => {
+    const result = await getApi().createDatabase({
+      targetOrganisationId: organisation_id,
+      name,
+      databaseType: engine ?? "postgresql",
+      tier: tier ?? "shared-dev",
+      projectId: project_id,
+    });
+    return formatResponse(result);
+  }
+);
+
+server.tool(
+  "get-database-connection-string",
+  "The connection string for a ready database. Treat it as a secret: put it in an environment variable (set-environment-variables), do not print it into files.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    database_id: z.string().describe("The database ID"),
+  },
+  async ({ organisation_id, database_id }) =>
+    formatResponse(await getApi().getDatabaseConnectionString(organisation_id, database_id))
+);
+
+// ============ Environment settings ============
+
+server.tool(
+  "set-environment-variables",
+  "Set (merge) environment variables on an environment. Existing keys not mentioned are kept; pass an empty string to clear one. " +
+  "Redeploy afterwards (deploy-environment) for running code to see them.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    environment_id: z.string().describe("The environment ID"),
+    variables: z.record(z.string(), z.string()).describe("Key/value pairs to set"),
+  },
+  async ({ organisation_id, environment_id, variables }) => {
+    const current = await getApi().getEnvironment(organisation_id, environment_id);
+    if (!current.success) return text(formatError(current.error));
+    const existing = ((current.data as unknown as { environment_vars?: Record<string, string> })?.environment_vars) ?? {};
+    const merged: Record<string, string> = { ...existing };
+    for (const [key, value] of Object.entries(variables)) {
+      if (value === "") delete merged[key];
+      else merged[key] = value;
+    }
+    const result = await getApi().updateEnvironment(organisation_id, environment_id, { environmentVars: merged });
+    if (!result.success) return text(formatError(result.error));
+    return text(`Environment variables saved (${Object.keys(merged).length} keys: ${Object.keys(merged).join(", ") || "none"}). Redeploy for them to take effect.`);
+  }
+);
+
+server.tool(
+  "get-environment-variables",
+  "The environment variable names set on an environment (values are shown masked).",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    environment_id: z.string().describe("The environment ID"),
+  },
+  async ({ organisation_id, environment_id }) => {
+    const current = await getApi().getEnvironment(organisation_id, environment_id);
+    if (!current.success) return text(formatError(current.error));
+    const vars = ((current.data as unknown as { environment_vars?: Record<string, string> })?.environment_vars) ?? {};
+    const rows = Object.entries(vars).map(([k, v]) => `${k}=${v.length > 6 ? `${v.slice(0, 3)}…${v.slice(-2)}` : "•••"}`);
+    return text(rows.length ? rows.join("\n") : "No environment variables set.");
+  }
+);
+
+server.tool(
+  "set-scaling",
+  "Instance floor and ceiling for an environment. min_instances ≥ 1 keeps it always on (plan permitting — a refusal names the next step).",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    environment_id: z.string().describe("The environment ID"),
+    min_instances: z.number().int().min(0).optional().describe("Minimum running instances (0 = scale to zero)"),
+    max_instances: z.number().int().min(1).optional().describe("Maximum instances"),
+  },
+  async ({ organisation_id, environment_id, min_instances, max_instances }) =>
+    formatResponse(await getApi().scaleEnvironment(organisation_id, environment_id, {
+      minInstances: min_instances,
+      maxInstances: max_instances,
+    }))
+);
+
+server.tool(
+  "add-custom-domain",
+  "Attach a custom domain to an environment. Returns the DNS records to create; then poll get-custom-domain-status.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    application_id: z.string().describe("The application ID"),
+    environment_id: z.string().describe("The environment ID"),
+    domain: z.string().describe("Hostname, e.g. app.example.com"),
+  },
+  async ({ organisation_id, application_id, environment_id, domain }) =>
+    formatResponse(await getApi().addCustomDomain(organisation_id, application_id, environment_id, domain))
+);
+
+server.tool(
+  "get-custom-domain-status",
+  "Whether an environment's custom domain has verified and is serving.",
+  {
+    organisation_id: z.string().describe("The organization ID"),
+    application_id: z.string().describe("The application ID"),
+    environment_id: z.string().describe("The environment ID"),
+  },
+  async ({ organisation_id, application_id, environment_id }) =>
+    formatResponse(await getApi().checkCustomDomain(organisation_id, application_id, environment_id))
+);
+
+// ============ Guided path ============
+
+server.prompt(
+  "deploy-from-scratch",
+  "Take a project from no Light Cloud account to a running deployment, from the terminal only.",
+  {
+    email: z.string().optional().describe("Email to sign in / sign up with, if not signed in yet"),
+  },
+  ({ email }) => ({
+    messages: [
+      {
+        role: "user",
+        content: {
+          type: "text",
+          text: [
+            "Deploy the project in the current directory to Light Cloud using the light-cloud MCP tools. Follow this order and stop to ask me only when a decision is mine to make (which plan, whether to pay).",
+            "",
+            "1. `whoami`. If not signed in: `connect` with " + (email ? `the email ${email}` : "my email (ask me for it)") + ", show me the code and link, then `connect-status` until approved.",
+            "2. `get-billing` for the workspace. On the free plan, continue. If a later step is refused with PLAN_ENTITLEMENT or POOL_EXHAUSTED, show me `list-plans`, ask which plan, then `add-payment-method` (if no card) + `payment-method-status` until saved, and `choose-plan`.",
+            "3. `detect-local-framework` and `detect-local-git` in the project directory.",
+            "4. Git-backed and pushed to GitHub: `get-github-installation-status`; if not installed, give me `get-github-install-url` and wait; then `create-application` from the repository. Otherwise: `package-source` + `upload-and-deploy`.",
+            "5. If detection says the framework needs a database: `create-database` (shared-dev), poll `get-database` until ready, `get-database-connection-string`, and `set-environment-variables` with it under the variable name the framework expects.",
+            "6. Any other variables the app needs: ask me, then `set-environment-variables`.",
+            "7. `deploy-environment` if anything changed after creation, then `get-formatted-status` until the deployment is ready. Give me the URL.",
+            "",
+            "Every refusal from a tool that says `Next step: …` means call that tool, then retry. Never ask me for a password or card number — the tools open a browser link for those.",
+          ].join("\n"),
+        },
+      },
+    ],
+  })
 );
 
 // Main function to start the server

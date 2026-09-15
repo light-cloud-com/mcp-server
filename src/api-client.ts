@@ -68,7 +68,9 @@ export class ApiClient {
           success: false,
           error: {
             code: errorBody.code || `HTTP_${response.status}`,
-            message: errorBody.message || response.statusText
+            message: errorBody.message || response.statusText,
+            status: response.status,
+            nextStep: typeof errorBody.nextStep === 'string' ? errorBody.nextStep : undefined,
           }
         };
       }
@@ -102,9 +104,14 @@ export class ApiClient {
       });
 
       if (response.ok) {
-        const data = await response.json() as { accessToken: string; refreshToken?: string };
+        // The backend answers { token, refreshToken }; older builds read
+        // `accessToken` and stored undefined, which signed the user out on
+        // the first expiry.
+        const data = await response.json() as { token?: string; accessToken?: string; refreshToken?: string };
+        const accessToken = data.token ?? data.accessToken;
+        if (!accessToken) return false;
         storeCredentials({
-          accessToken: data.accessToken,
+          accessToken,
           refreshToken: data.refreshToken || refreshToken,
         });
         return true;

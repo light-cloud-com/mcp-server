@@ -2,9 +2,14 @@
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that enables Claude to deploy and manage applications on Light Cloud Platform.
 
+## No account yet? Start here
+
+Ask Claude: **"Sign me up for Light Cloud as you@example.com"** (or "connect me to Light Cloud"). The `connect` tool creates the account — free plan, no password, no form — once you approve a short code at `console.light-cloud.com/device` from any device. Same tool signs an existing account in. Then: "deploy this project", "add a database", "put the workspace on Pro and add a card". Nothing needs the web console.
+
 ## Features
 
-- **Browser-based authentication** - Secure OAuth login flow
+- **Sign-up and sign-in from the terminal** - `connect` with an email; a code approved on any device creates or signs in the account. No password.
+- **Billing from the conversation** - plans, usage pool, card via a Stripe-hosted link
 - **Application management** - Create, deploy, and delete applications
 - **Environment management** - Manage staging, production, and preview environments
 - **GitHub integration** - Deploy directly from GitHub repositories
@@ -65,9 +70,20 @@ Claude: [Fetches and displays recent logs]
 
 | Tool | Description |
 |------|-------------|
-| `login` | Sign in to Light Cloud (opens browser) |
+| `connect` | Sign in — or sign up — with an email from the terminal: shows a code to type on `console.light-cloud.com/device` from any device. No browser needed on this machine, no password ever |
+| `connect-status` | Wait for the `connect` approval (long-polls ~45 s per call) |
+| `login` | Sign in through a browser on this machine (loopback callback) |
 | `logout` | Sign out and clear credentials |
 | `whoami` | Check authentication status |
+| `get-billing` | Plan, card on file, usage pool for a workspace |
+| `list-plans` | Plans with prices and entitlements |
+| `choose-plan` | Switch plan (paid plans need a card; the refusal says so) |
+| `add-payment-method` | Stripe-hosted link to save a card (no card data through the tool) |
+| `payment-method-status` | Wait for the card from `add-payment-method` to be saved |
+| `list-databases` / `get-database` / `create-database` / `get-database-connection-string` | Managed databases (shared pool by default) |
+| `set-environment-variables` / `get-environment-variables` | Environment variables (merge; values masked on read) |
+| `set-scaling` | Instance floor / ceiling (always-on when min ≥ 1) |
+| `add-custom-domain` / `get-custom-domain-status` | Custom domains |
 | `list-applications` | List all applications |
 | `get-application` | Get application details |
 | `create-application` | Create app from GitHub repo |
@@ -82,13 +98,27 @@ Claude: [Fetches and displays recent logs]
 
 ## Authentication
 
-The server uses browser-based OAuth authentication. When you first interact with Light Cloud tools, Claude will prompt you to log in:
+Two ways in; both store credentials in `~/.lightcloud/credentials.json`.
 
-1. Claude opens your browser to the Light Cloud login page
-2. Sign in with Google, GitHub, or email
-3. Return to Claude - you're authenticated!
+**`connect` (default, works anywhere).** Ask Claude to connect with your
+email. The tool prints an 8-character code and the address
+`console.light-cloud.com/device`; open it on any device, sign in if you
+already have an account (or follow the link in the email we sent if you do
+not — approving creates the account), type the code, approve. Claude calls
+`connect-status` until the approval lands. No password is typed into
+Claude, ever.
 
-Credentials are stored securely in `~/.lightcloud/credentials.json`.
+**`login` (browser on this machine).** Opens the console's sign-in page
+with a loopback callback, as before.
+
+## Refusals an agent can act on
+
+Write tools that hit a plan limit come back with a `code` and a `Next
+step:` line, for example `PLAN_ENTITLEMENT → choose-plan`,
+`PAYMENT_METHOD_REQUIRED → add-payment-method`, `POOL_EXHAUSTED →
+choose-plan`, `ORGANISATION_SUSPENDED → add-payment-method`. The
+`deploy-from-scratch` prompt walks the whole path: connect, billing check,
+detect, create, database + environment variables, deploy.
 
 ## Configuration
 

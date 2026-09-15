@@ -62,6 +62,68 @@ export interface EnvironmentLogsResponse {
   hasMore: boolean;
 }
 
+export interface OwnerBillingSummary {
+  organisations: Array<{ organisation: { id: string; name: string } }>;
+  billing_details_saved: boolean;
+  stripe_customer_created: boolean;
+  payment_method: { last4: string; brand: string } | null;
+  billing_cycle: { next_billing_date: string | null; last_billed_at: string | null };
+}
+
+export interface PlanCatalogEntry {
+  id: string;
+  name: string;
+  price: number;
+  entitlements?: Record<string, unknown> | null;
+}
+
+export interface PlansResponse {
+  plans: PlanCatalogEntry[];
+  currentPlanId: string | null;
+  pendingPlanId: string | null;
+  pool: {
+    total: number;
+    spent: number;
+    remaining: number;
+    overage: number;
+    pct: number;
+    planPrice: number;
+    cycleStarted: boolean;
+  };
+  hardStopped: boolean;
+  spendingLimit: number | null;
+}
+
+export interface ChoosePlanResult {
+  planId: string;
+  pendingPlanId: string | null;
+  spendingLimit: number | null;
+  proratedCharge: number;
+  chargeStatus: string;
+  effectiveAt: string | null;
+}
+
+export interface CheckoutSession {
+  url: string;
+  sessionId: string;
+  expiresAt: string;
+}
+
+export interface CheckoutStatus {
+  status: 'open' | 'complete' | 'expired';
+  paymentMethod: { brand: string; last4: string; exp_month: number; exp_year: number } | null;
+}
+
+export interface CreateDatabaseRequest {
+  targetOrganisationId: string;
+  name: string;
+  projectId?: string;
+  databaseType?: 'postgresql' | 'mysql';
+  tier?: string;
+  region?: string;
+  storageGb?: number;
+}
+
 export class LightCloudApi {
   constructor(private client: ApiClient) {}
 
@@ -320,6 +382,121 @@ export class LightCloudApi {
   }
 
   // ============ Config ============
+
+  // ============ Billing ============
+
+  async getOwnerBillingSummary(): Promise<ApiResponse<{ data: OwnerBillingSummary }>> {
+    return this.client.post<{ data: OwnerBillingSummary }>('/api/billing/owner-summary', {});
+  }
+
+  async getPlans(organisationId: string): Promise<ApiResponse<{ data: PlansResponse }>> {
+    return this.client.post<{ data: PlansResponse }>('/api/billing/plans', {
+      targetOrganisationId: organisationId,
+    });
+  }
+
+  async choosePlan(organisationId: string, planId: string): Promise<ApiResponse<{ data: ChoosePlanResult }>> {
+    return this.client.post<{ data: ChoosePlanResult }>('/api/billing/choose-plan', {
+      targetOrganisationId: organisationId,
+      planId,
+    });
+  }
+
+  async createCheckoutSession(organisationId: string): Promise<ApiResponse<{ data: CheckoutSession }>> {
+    return this.client.post<{ data: CheckoutSession }>('/api/billing/checkout-session', {
+      targetOrganisationId: organisationId,
+      client: 'mcp',
+    });
+  }
+
+  async getCheckoutSessionStatus(
+    organisationId: string,
+    sessionId: string
+  ): Promise<ApiResponse<{ data: CheckoutStatus }>> {
+    return this.client.post<{ data: CheckoutStatus }>('/api/billing/checkout-session/status', {
+      targetOrganisationId: organisationId,
+      sessionId,
+    });
+  }
+
+  // ============ Databases ============
+
+  async listDatabases(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases', { targetOrganisationId: organisationId });
+  }
+
+  async getDatabase(organisationId: string, databaseId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/get', {
+      targetOrganisationId: organisationId,
+      databaseId,
+    });
+  }
+
+  async createDatabase(request: CreateDatabaseRequest): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/create', request);
+  }
+
+  async getDatabaseConnectionString(
+    organisationId: string,
+    databaseId: string
+  ): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/connection-string', {
+      targetOrganisationId: organisationId,
+      databaseId,
+    });
+  }
+
+  // ============ Environment settings ============
+
+  async updateEnvironment(
+    organisationId: string,
+    environmentId: string,
+    changes: Record<string, unknown>
+  ): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/environments/update', {
+      targetOrganisationId: organisationId,
+      environmentId,
+      ...changes,
+    });
+  }
+
+  async scaleEnvironment(
+    organisationId: string,
+    environmentId: string,
+    scaling: { minInstances?: number; maxInstances?: number }
+  ): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/environments/scale', {
+      targetOrganisationId: organisationId,
+      environmentId,
+      ...scaling,
+    });
+  }
+
+  async addCustomDomain(
+    organisationId: string,
+    applicationId: string,
+    environmentId: string,
+    domain: string
+  ): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/add-domain', {
+      targetOrganisationId: organisationId,
+      applicationId,
+      environmentId,
+      domain,
+    });
+  }
+
+  async checkCustomDomain(
+    organisationId: string,
+    applicationId: string,
+    environmentId: string
+  ): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/applications/check-domain', {
+      targetOrganisationId: organisationId,
+      applicationId,
+      environmentId,
+    });
+  }
 
   async getPlatformConfig(): Promise<ApiResponse<Record<string, unknown>>> {
     return this.client.get<Record<string, unknown>>('/api/config/platform');

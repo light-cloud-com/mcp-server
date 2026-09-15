@@ -79,6 +79,10 @@ export interface ApiResponse<T> {
   error?: {
     code: string;
     message: string;
+    /** HTTP status, when the error came from a response. */
+    status?: number;
+    /** The backend's hint for what to call next (e.g. "add-payment-method"). */
+    nextStep?: string;
   };
 }
 
