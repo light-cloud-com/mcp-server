@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ApiClient } from "./api-client.js";
-import { LightCloudApi } from "./api.js";
+import { LightCloudApi, type PlanCatalogEntry } from "./api.js";
 import { startNonBlockingLoginFlow, logout as performLogout } from "./auth.js";
 import { isAuthenticated } from "./token-storage.js";
 import {
@@ -32,19 +32,19 @@ const SERVER_INSTRUCTIONS = [
   "",
   "ACCOUNTS: `connect` with an email signs the user in AND creates the account if the email has none (free plan, no password, no form). Use it whenever the user has no Light Cloud account, wants to sign up, or is not signed in. It prints a short code; the user approves it at console.light-cloud.com/device on any device; call `connect-status` until approved. Never ask the user for a password. `login` is the alternative that opens a browser on this machine.",
   "",
-  "BILLING: `get-billing` (plan, card, usage pool), `list-plans`, `choose-plan`. A card is added with `add-payment-method` (Stripe-hosted link the user opens anywhere; poll `payment-method-status`). No card number ever passes through a tool.",
+  "BILLING: `get-billing` (plan, card, included usage), `list-plans`, `choose-plan`. Every plan includes usage worth its price each month; extra usage goes on the next invoice (paid plans never pause; the free plan pauses when its included usage is used up). A card is added with `add-payment-method` (Stripe-hosted link the user opens anywhere; poll `payment-method-status`). No card number ever passes through a tool.",
   "",
   "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; the free plan is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
   "",
   "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. The `deploy-from-scratch` prompt walks the full path in order.",
   "",
-  "SCOPE: everything the console does is here — app and environment settings, folders, stacks, database admin (schema, SQL, dump, import, metrics), invoices and spending limits, workspaces and members, API keys (paid plans), git provider links, notifications, support. Console-only by design: the account password, two-factor, and the Agents & CLI switch. A refusal with code AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED means the user turned that off under Settings → Security → Agents & CLI: tell them, do not retry, do not look for another route.",
+  "SCOPE: everything the console does is here — app and environment settings, folders, stacks, database admin (schema, SQL, dump, import, metrics), invoices and usage alerts, workspaces and members, API keys (paid plans), git provider links, notifications, support. Console-only by design: the account password, two-factor, and the Agents & CLI switch. A refusal with code AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED means the user turned that off under Settings → Security → Agents & CLI: tell them, do not retry, do not look for another route.",
 ].join("\n");
 
 const server = new McpServer(
   {
     name: "light-cloud",
-    version: "1.4.1",
+    version: "1.5.1",
   },
   { instructions: SERVER_INSTRUCTIONS }
 );
@@ -1328,10 +1328,48 @@ server.tool(
 // ============ Billing Tools ============
 
 const money = (value: number) => `$${value.toFixed(2)}`;
+/** The backend's pool.pct is a ratio (0.37); print it as a percentage. */
+const pct = (ratio: number | null | undefined) =>
+  typeof ratio === "number" ? Math.round(ratio * 100) : 0;
+
+const SIZE_NAMES: Record<string, string> = { nano: "Nano", micro: "Micro", small: "Small", medium: "Medium", large: "Large" };
+const KIND_NAMES: Record<string, string> = { static: "static sites", ssr: "server-rendered frontends", service: "server apps" };
+
+/** One readable line per plan: the usage it includes, then its limits. */
+function describePlan(plan: PlanCatalogEntry): string {
+  const ent = (plan.entitlements ?? {}) as Record<string, unknown>;
+  const included = typeof ent.usageCredits === "number" ? ent.usageCredits : plan.price;
+  const parts: string[] = [`includes ${money(included)} of usage a month`];
+  if (Array.isArray(ent.appKinds)) {
+    parts.push(`runs ${(ent.appKinds as string[]).map((k) => KIND_NAMES[k] ?? k).join(" and ")} only`);
+  }
+  const counts: string[] = [];
+  if (typeof ent.services === "number") counts.push(`${ent.services} server app${ent.services === 1 ? "" : "s"}`);
+  if (typeof ent.sites === "number") counts.push(`${ent.sites} static site${ent.sites === 1 ? "" : "s"}`);
+  if (counts.length > 0) parts.push(counts.join(", "));
+  parts.push(
+    Array.isArray(ent.containerSizes)
+      ? `sizes ${(ent.containerSizes as string[]).map((s) => SIZE_NAMES[s] ?? s).join("/")}`
+      : "every size"
+  );
+  if (Array.isArray(ent.databaseTiers)) {
+    const tiers = ent.databaseTiers as string[];
+    parts.push(tiers.length > 0 ? `database tiers ${tiers.join("/")}` : "no databases");
+  } else {
+    parts.push("every database tier");
+  }
+  parts.push(ent.alwaysOnAllowed ? "always-on allowed" : "no always-on");
+  if (typeof ent.maxInstances === "number") parts.push(`up to ${ent.maxInstances} instances per app`);
+  if (ent.seats === null) parts.push("unlimited members");
+  else if (typeof ent.seats === "number") {
+    parts.push(`${ent.seats} member${ent.seats === 1 ? "" : "s"}${ent.extraSeatAllowed ? " + extra members at $9 each" : ""}`);
+  }
+  return parts.join(" · ");
+}
 
 server.tool(
   "get-billing",
-  "Plan, card on file and usage pool for a workspace. Call before creating resources: it says whether a card or a plan change is needed.",
+  "Plan, card on file and usage this cycle against what the plan includes. Call before creating resources: it says whether a card or a plan change is needed.",
   {
     organisation_id: z.string().describe("The organization ID"),
   },
@@ -1350,10 +1388,10 @@ server.tool(
       `Plan: ${current ? `${current.name} (${current.id}) — ${money(current.price)}/month` : p.currentPlanId ?? "free"}`,
       p.pendingPlanId ? `Pending change at next cycle: ${p.pendingPlanId}` : null,
       `Card on file: ${card ? `${card.brand} •••• ${card.last4}` : "none"}`,
-      `Usage pool this cycle: ${money(p.pool.spent)} of ${money(p.pool.total)} used (${Math.round(p.pool.pct)}%)` +
-        (p.pool.overage > 0 ? `, overage ${money(p.pool.overage)}` : ""),
+      `Usage this cycle: ${money(p.pool.spent)} of ${money(p.pool.total)} included (${pct(p.pool.pct)}%)` +
+        (p.pool.overage > 0 ? `, extra usage ${money(p.pool.overage)} — goes on the next invoice` : ""),
       p.hardStopped
-        ? "STATUS: free-plan pool exhausted — projects are paused until an upgrade (choose-plan) or the next cycle."
+        ? "STATUS: the free plan's included usage is used up — projects are paused until an upgrade (choose-plan) or the next cycle."
         : null,
       summary.success && summary.data?.data.billing_cycle.next_billing_date
         ? `Next invoice: ${summary.data.data.billing_cycle.next_billing_date.slice(0, 10)}`
@@ -1369,7 +1407,7 @@ server.tool(
 
 server.tool(
   "list-plans",
-  "The plans a workspace can be on, with prices and what each includes (sizes, always-on, database tiers).",
+  "The plans a workspace can be on: price, the usage each includes, and its limits (apps, sites, sizes, database tiers, always-on, members).",
   {
     organisation_id: z.string().describe("The organization ID"),
   },
@@ -1380,10 +1418,11 @@ server.tool(
     const p = result.data.data;
     const rows = p.plans.map((plan) => {
       const marker = plan.id === (p.currentPlanId ?? "hobby") ? " (current)" : "";
-      const entitlements = plan.entitlements ? `\n    includes: ${JSON.stringify(plan.entitlements)}` : "";
-      return `- ${plan.id}: ${plan.name}${marker} — ${money(plan.price)}/month${entitlements}`;
+      return `- ${plan.id}: ${plan.name}${marker} — ${plan.price > 0 ? `${money(plan.price)}/month` : "free"}\n    ${describePlan(plan)}`;
     });
-    return text(`Plans:\n${rows.join("\n")}\n\nchoose-plan(plan_id) to switch. Paid plans need a card on file (add-payment-method).`);
+    return text(
+      `Plans (every plan includes usage worth its price; extra usage goes on the next invoice — paid plans never pause, the free plan pauses when its included usage is used up):\n${rows.join("\n")}\n\nchoose-plan(plan_id) to switch. Paid plans need a card on file (add-payment-method).`
+    );
   }
 );
 
@@ -1948,10 +1987,31 @@ server.tool(
 
 server.tool(
   "get-usage",
-  "Usage against the workspace's pool this cycle, per resource, with daily points.",
-  { organisation_id: orgArg, days: z.number().int().min(1).max(90).optional() },
+  "Usage this cycle against what the plan includes: the total, and every resource (running and removed) with what it has used so far. The same meter as the billing page.",
+  { organisation_id: orgArg },
   { title: "Get usage", ...RO },
-  async ({ organisation_id, days }) => formatResponse(await getApi().getUsage(organisation_id, days ?? 30))
+  async ({ organisation_id }) => {
+    const result = await getApi().getPlans(organisation_id);
+    if (!result.success || !result.data) return text(formatError(result.error));
+    const p = result.data.data;
+    const row = (r: { name: string; kind: string; machine?: string | null; hoursUsed?: number | null; costThisCycle: number }) =>
+      `- ${r.name} (${r.machine ?? r.kind}${typeof r.hoursUsed === "number" ? `, ${r.hoursUsed} h` : ""}): ${money(r.costThisCycle)}`;
+    const running = p.resources?.running ?? [];
+    const removed = p.resources?.removed ?? [];
+    const lines = [
+      `Usage this cycle: ${money(p.pool.spent)} of ${money(p.pool.total)} included (${pct(p.pool.pct)}%)` +
+        (p.pool.overage > 0
+          ? ` — ${money(p.pool.overage)} extra usage so far, goes on the next invoice`
+          : ` — ${money(p.pool.remaining)} left`),
+      p.hardStopped ? "The free plan's included usage is used up — projects are paused until choose-plan or the next cycle." : null,
+      p.pool.cycleStarted === false ? "The first billing cycle has not started yet; run time until then is not billed." : null,
+      "",
+      running.length > 0 ? "Running:" : "Nothing running this cycle.",
+      ...running.map(row),
+      ...(removed.length > 0 ? ["", "Removed this cycle (their run time still counts):", ...removed.map(row)] : []),
+    ].filter((line): line is string => line !== null);
+    return text(lines.join("\n"));
+  }
 );
 
 server.tool(
@@ -2003,23 +2063,37 @@ server.tool(
 );
 
 server.tool(
-  "get-spending-limit",
-  "The workspace's spending limit and budget alert threshold.",
+  "get-usage-alerts",
+  "The workspace's usage alerts: the included usage for the cycle (set by the plan — emails go out at 80% and when it is used up) and the optional extra alert amount. There is no spending cap: on a paid plan extra usage goes on the next invoice, on the free plan the workspace pauses.",
   { organisation_id: orgArg },
-  { title: "Get spending limit", ...RO },
-  async ({ organisation_id }) => formatResponse(await getApi().getBillingSettings(organisation_id))
+  { title: "Get usage alerts", ...RO },
+  async ({ organisation_id }) => {
+    const result = await getApi().getBillingSettings(organisation_id);
+    if (!result.success || !result.data) return text(formatError(result.error));
+    const s = result.data.data;
+    const included = typeof s.paid_monthly === "number" ? s.paid_monthly : s.spending_limit;
+    return text(
+      [
+        `Included usage this cycle: ${typeof included === "number" ? money(included) : "not set"} (set by the plan; emails at 80% and when it is used up always send).`,
+        `Extra alert: ${typeof s.budget_alert_threshold === "number" ? `at ${money(s.budget_alert_threshold)} of usage` : "none"}.`,
+        s.cap_reached ? "The included usage for this cycle is used up." : null,
+        "set-usage-alerts changes the extra alert; choose-plan changes how much usage is included.",
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n")
+    );
+  }
 );
 
 server.tool(
-  "set-spending-limit",
-  "Set a monthly spending limit (USD) and the percentage at which to alert. Pass null to clear the limit.",
-  { organisation_id: orgArg, spending_limit: z.number().nullable().optional(), budget_alert_threshold: z.number().min(1).max(100).nullable().optional() },
-  { title: "Set spending limit", ...RW },
-  async ({ organisation_id, spending_limit, budget_alert_threshold }) => {
-    const settings: { spending_limit?: number | null; budget_alert_threshold?: number | null } = {};
-    if (spending_limit !== undefined) settings.spending_limit = spending_limit;
-    if (budget_alert_threshold !== undefined) settings.budget_alert_threshold = budget_alert_threshold;
-    return formatResponse(await getApi().setBillingSettings(organisation_id, settings));
+  "set-usage-alerts",
+  "Set one extra usage-alert email at a dollar amount of usage this cycle (the 80% and 100% emails always send). Pass null to remove it. Alerts only email — nothing pauses, and there is no spending cap to set: a bigger plan includes more usage.",
+  { organisation_id: orgArg, alert_at_usd: z.number().min(0).nullable() },
+  { title: "Set usage alerts", ...RW },
+  async ({ organisation_id, alert_at_usd }) => {
+    const result = await getApi().setBillingSettings(organisation_id, { budget_alert_threshold: alert_at_usd });
+    if (!result.success) return text(formatError(result.error));
+    return text(alert_at_usd === null ? "Extra usage alert removed." : `Extra usage alert set at ${money(alert_at_usd)} of usage this cycle.`);
   }
 );
 
@@ -2245,7 +2319,7 @@ server.prompt(
             "Deploy the project in the current directory to Light Cloud using the light-cloud MCP tools. Ask me everything you need in ONE message before touching anything: which workspace (only if I belong to several), and whether the site should be public or password-protected (and the password if so). Do not ask about plans or payment unless a tool refuses; the free plan is the default.",
             "",
             "1. `whoami`. If not signed in: `connect` with " + (email ? `the email ${email}` : "my email (ask me for it)") + ", show me the code and link, then `connect-status` until approved.",
-            "2. `get-billing` for the workspace. On the free plan, continue. If a later step is refused with PLAN_ENTITLEMENT or POOL_EXHAUSTED, show me `list-plans`, ask which plan, then `add-payment-method` (if no card) + `payment-method-status` until saved, and `choose-plan`.",
+            "2. `get-billing` for the workspace. On the free plan, continue. If a later step is refused with PLAN_ENTITLEMENT (not in the plan) or POOL_EXHAUSTED (the free plan's included usage is used up), show me `list-plans`, ask which plan, then `add-payment-method` (if no card) + `payment-method-status` until saved, and `choose-plan`.",
             "3. `detect-local-framework` and `detect-local-git` in the project directory.",
             "4. Git-backed and pushed to GitHub: `get-github-installation-status`; if not installed, give me `get-github-install-url` and wait; then `create-application` from the repository. Otherwise `upload-and-deploy` (it packages the folder itself). Pass `password` to either when I asked for a protected site.",
             "5. If detection says the framework needs a database: `create-database` (shared-dev), poll `get-database` until ready, `get-database-connection-string`, and `set-environment-variables` with it under the variable name the framework expects.",

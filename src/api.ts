@@ -70,6 +70,17 @@ export interface OwnerBillingSummary {
   billing_cycle: { next_billing_date: string | null; last_billed_at: string | null };
 }
 
+/** /api/billing/settings/get — spending_limit is the cycle's included usage
+ *  (derived from the plan; the name is historical), budget_alert_threshold
+ *  the customer's optional extra alert in dollars of usage. */
+export interface BillingSettings {
+  spending_limit: number | null;
+  budget_alert_threshold: number | null;
+  cap_managed?: boolean;
+  paid_monthly?: number;
+  cap_reached?: boolean;
+}
+
 export interface PlanCatalogEntry {
   id: string;
   name: string;
@@ -92,6 +103,11 @@ export interface PlansResponse {
   };
   hardStopped: boolean;
   spendingLimit: number | null;
+  /** Every resource with its metered cost this cycle — the rows sum to pool.spent. */
+  resources?: {
+    running: Array<{ kind: string; name: string; machine?: string | null; hoursUsed?: number | null; costThisCycle: number; since?: string | null }>;
+    removed: Array<{ kind: string; name: string; machine?: string | null; costThisCycle: number; from?: string | null; to?: string | null }>;
+  };
 }
 
 export interface ChoosePlanResult {
@@ -637,7 +653,7 @@ export class LightCloudApi {
   async removePaymentMethod(organisationId: string): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/billing/payment-method/remove', this.org(organisationId));
   }
-  async getBillingSettings(organisationId: string): Promise<ApiResponse<unknown>> {
+  async getBillingSettings(organisationId: string): Promise<ApiResponse<{ data: BillingSettings }>> {
     return this.client.post('/api/billing/settings/get', this.org(organisationId));
   }
   async setBillingSettings(organisationId: string, settings: { spending_limit?: number | null; budget_alert_threshold?: number | null }): Promise<ApiResponse<unknown>> {

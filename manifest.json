@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "light-cloud",
   "display_name": "Light Cloud",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Sign up, deploy, run and pay for web apps, APIs and databases on Light Cloud from a conversation.",
-  "long_description": "Light Cloud runs your web apps, APIs and databases. This extension gives Claude the whole path from no account to a running app on a paid plan, without the web console:\n\n- **Sign up or sign in** with an email: Claude shows a short code, you approve it at console.light-cloud.com/device from any device (a phone works). A new address gets an account on the free plan. No password, ever.\n- **Deploy** a local folder or a GitHub repository; framework detection, `.env` parsing, a live URL and a console link on every deploy.\n- **Databases and environment variables**: create a database on the shared pool, set its connection string, scale to always-on, attach a custom domain.\n- **Plans and payment**: see the plan and usage pool, switch plan, add a card through a Stripe-hosted link Claude waits on. Card numbers never pass through the extension.\n- **Logs, deployments, rollbacks** for everything you run.\n\nRefusals come back with the next step, so Claude keeps going instead of stopping. Credentials stay on your machine in `~/.lightcloud/credentials.json`; the tools act as your signed-in user and nothing more.",
+  "long_description": "Light Cloud runs your web apps, APIs and databases. This extension gives Claude the whole path from no account to a running app on a paid plan, without the web console:\n\n- **Sign up or sign in** with an email: Claude shows a short code, you approve it at console.light-cloud.com/device from any device (a phone works). A new address gets an account on the free plan. No password, ever.\n- **Deploy** a local folder or a GitHub repository; framework detection, `.env` parsing, a live URL and a console link on every deploy.\n- **Databases and environment variables**: create a database on the shared pool, set its connection string, scale to always-on, attach a custom domain.\n- **Plans and payment**: see the plan and how much of its included usage is used, switch plan, add a card through a Stripe-hosted link Claude waits on. Card numbers never pass through the extension.\n- **Logs, deployments, rollbacks** for everything you run.\n\nRefusals come back with the next step, so Claude keeps going instead of stopping. Credentials stay on your machine in `~/.lightcloud/credentials.json`; the tools act as your signed-in user and nothing more.",
   "author": {
     "name": "Light Cloud",
     "email": "hello@light-cloud.com",
@@ -298,10 +298,10 @@
       "name": "remove-payment-method"
     },
     {
-      "name": "get-spending-limit"
+      "name": "get-usage-alerts"
     },
     {
-      "name": "set-spending-limit"
+      "name": "set-usage-alerts"
     },
     {
       "name": "get-billing-details"

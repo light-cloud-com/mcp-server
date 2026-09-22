@@ -9,7 +9,7 @@ Ask Claude: **"Sign me up for Light Cloud as you@example.com"** (or "connect me 
 ## Features
 
 - **Sign-up and sign-in from the terminal** - `connect` with an email; a code approved on any device creates or signs in the account. No password.
-- **Billing from the conversation** - plans, usage pool, card via a Stripe-hosted link
+- **Billing from the conversation** - plans, included usage, card via a Stripe-hosted link
 - **Application management** - Create, deploy, and delete applications
 - **Environment management** - Manage staging, production, and preview environments
 - **GitHub integration** - Deploy directly from GitHub repositories
@@ -17,7 +17,7 @@ Ask Claude: **"Sign me up for Light Cloud as you@example.com"** (or "connect me 
 - **Logs, metrics, rollbacks** - runtime and build logs, environment metrics and activity, one-call rollback
 - **Framework detection** - the uploaded folder is read by the same detector the console uses for a repository
 - **Password-protected sites** - `password` on deploy gates the site at the edge from the first request
-- **Console parity** - settings, folders, stacks, database admin (schema, SQL, dump, import), invoices and spending limits, workspace members, API keys (paid plans), git provider links, notifications, support
+- **Console parity** - settings, folders, stacks, database admin (schema, SQL, dump, import), invoices and usage alerts, workspace members, API keys (paid plans), git provider links, notifications, support
 - **An off switch you control** - Settings → Security → Agents & CLI in the console decides what agents may do; enforced on the backend
 
 ## Installation
@@ -87,7 +87,7 @@ Claude: [Fetches and displays recent logs]
 | Logs & deployments | `get-environment-logs`, `list-deployments`, `get-deployment`, `get-build-logs` |
 | Variables, domains | `set-environment-variables`, `get-environment-variables`, `add-custom-domain`, `get-custom-domain-status`, `retry-custom-domain`, `remove-custom-domain` |
 | Databases | `list-databases`, `get-database`, `create-database`, `update-database`, `delete-database`, `get-database-connection-string`, `rotate-database-password`, `get-database-schema`, `query-database`, `get-database-metrics`, `dump-database`, `import-database` |
-| Plan & billing | `get-billing`, `list-plans`, `choose-plan`, `add-payment-method`, `payment-method-status`, `remove-payment-method`, `get-usage`, `get-usage-history`, `list-invoices`, `get-invoice`, `retry-invoice`, `get-outstanding-invoices`, `get-spending-limit`, `set-spending-limit`, `get-billing-details`, `set-billing-details` |
+| Plan & billing | `get-billing`, `list-plans`, `choose-plan`, `add-payment-method`, `payment-method-status`, `remove-payment-method`, `get-usage`, `get-usage-history`, `list-invoices`, `get-invoice`, `retry-invoice`, `get-outstanding-invoices`, `get-usage-alerts`, `set-usage-alerts`, `get-billing-details`, `set-billing-details` |
 | Workspace & members | `create-workspace`, `list-members`, `invite-member`, `remove-member`, `set-member-role`, `list-roles`, `list-api-keys`, `create-api-key` (paid plans), `revoke-api-key` |
 | Git providers | `get-github-installation-status`, `get-github-install-url`, `list-github-installations`, `list-repositories`, `list-branches`, `check-repo-access`, `connect-git-provider` (GitLab / Bitbucket, one link), `list-provider-repositories` |
 | Other | `list-notifications`, `mark-notifications-read`, `contact-support`, `ping`, `get-platform-config`, `get-cloudrun-config`, and the low-level upload steps (`package-source`, `request-upload-url`, `complete-upload`, `create-application-from-upload`) |
@@ -118,7 +118,7 @@ with a loopback callback, as before.
 Write tools that hit a plan limit come back with a `code` and a `Next
 step:` line, for example `PLAN_ENTITLEMENT → choose-plan`,
 `PAYMENT_METHOD_REQUIRED → add-payment-method`, `POOL_EXHAUSTED →
-choose-plan`, `ORGANISATION_SUSPENDED → add-payment-method`. The
+choose-plan` (the free plan's included usage is used up), `ORGANISATION_SUSPENDED → add-payment-method`. The
 `deploy-from-scratch` prompt walks the whole path: connect, billing check,
 detect, create, database + environment variables, deploy.
 
