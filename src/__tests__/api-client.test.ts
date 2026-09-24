@@ -473,3 +473,31 @@ describe('ApiClient', () => {
     });
   });
 });
+
+describe('ApiClient response shaping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test-token');
+  });
+
+  it('hides secret keys from ordinary responses', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'env-1', environment_vars: { A: '1' }, password: 'pw' }),
+    });
+    const result = await new ApiClient().post<{ id: string }>('/api/environments/get', {});
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({ id: 'env-1' });
+  });
+
+  it('keeps keys the caller allows', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'env-1', environment_vars: { A: '1' }, password: 'pw' }),
+    });
+    const result = await new ApiClient().post<{ id: string }>('/api/environments/get', {}, { allow: ['environment_vars'] });
+    expect(result.data).toEqual({ id: 'env-1', environment_vars: { A: '1' } });
+  });
+});

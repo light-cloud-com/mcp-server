@@ -4,6 +4,15 @@ import { ApiResponse } from './types.js';
 import { getAccessToken, isAuthenticated, storeCredentials, getRefreshToken } from './token-storage.js';
 import { sanitizeForAgent } from './utils/sanitize.js';
 
+export interface RequestOptions {
+  skipAuth?: boolean;
+  /**
+   * Secret-looking keys the caller needs in the answer (see
+   * sanitizeForAgent). Only for tools whose purpose is to return them.
+   */
+  allow?: readonly string[];
+}
+
 export class ApiClient {
   private baseUrl: string;
   private consoleUrl: string;
@@ -21,7 +30,7 @@ export class ApiClient {
     method: string,
     path: string,
     body?: unknown,
-    options: { skipAuth?: boolean } = {}
+    options: RequestOptions = {}
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseUrl}${path}`;
 
@@ -78,7 +87,7 @@ export class ApiClient {
       }
 
       const data = await response.json();
-      return { success: true, data: sanitizeForAgent(data) };
+      return { success: true, data: sanitizeForAgent(data, { allow: options.allow }) };
 
     } catch (error) {
       return {
@@ -124,11 +133,11 @@ export class ApiClient {
     return false;
   }
 
-  async get<T>(path: string, options?: { skipAuth?: boolean }): Promise<ApiResponse<T>> {
+  async get<T>(path: string, options?: RequestOptions): Promise<ApiResponse<T>> {
     return this.request<T>('GET', path, undefined, options);
   }
 
-  async post<T>(path: string, body?: unknown, options?: { skipAuth?: boolean }): Promise<ApiResponse<T>> {
+  async post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<ApiResponse<T>> {
     return this.request<T>('POST', path, body, options);
   }
 

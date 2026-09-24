@@ -265,6 +265,23 @@ export class LightCloudApi {
     });
   }
 
+  /**
+   * The environment with its variable set. get-environment hides
+   * `environment_vars` like every other read; the two variable tools are
+   * the only callers that need the values (one to show them masked, one to
+   * merge before saving — dropping them there would wipe the rest).
+   */
+  async getEnvironmentWithVariables(
+    organisationId: string,
+    environmentId: string
+  ): Promise<ApiResponse<Environment & { environment_vars?: Record<string, string> }>> {
+    return this.client.post(
+      '/api/environments/get',
+      { targetOrganisationId: organisationId, environmentId },
+      { allow: ['environment_vars'] }
+    );
+  }
+
   async createEnvironment(
     organisationId: string,
     applicationId: string,
@@ -474,10 +491,12 @@ export class LightCloudApi {
     organisationId: string,
     databaseId: string
   ): Promise<ApiResponse<unknown>> {
-    return this.client.post('/api/databases/connection-string', {
-      targetOrganisationId: organisationId,
-      databaseId,
-    });
+    // This tool's whole answer is the secret; keep it.
+    return this.client.post(
+      '/api/databases/connection-string',
+      { targetOrganisationId: organisationId, databaseId },
+      { allow: ['connectionString', 'connection_string', 'password'] }
+    );
   }
 
   // ============ Environment settings ============
@@ -606,7 +625,7 @@ export class LightCloudApi {
     return this.client.post('/api/databases/delete', this.org(organisationId, { databaseId }));
   }
   async rotateDatabasePassword(organisationId: string, databaseId: string, newPassword?: string): Promise<ApiResponse<{ password: string }>> {
-    return this.client.post('/api/databases/rotate-password', this.org(organisationId, { databaseId, newPassword }));
+    return this.client.post('/api/databases/rotate-password', this.org(organisationId, { databaseId, newPassword }), { allow: ['password'] });
   }
   async getDatabaseMetrics(organisationId: string, databaseId: string, timeRange?: string): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/databases/metrics', this.org(organisationId, { databaseId, timeRange }));
@@ -717,7 +736,8 @@ export class LightCloudApi {
     return this.client.post('/api/api-keys', this.org(organisationId));
   }
   async createApiKey(organisationId: string, name: string, role?: string, expiresAt?: string): Promise<ApiResponse<unknown>> {
-    return this.client.post('/api/api-keys/create', this.org(organisationId, { name, role, expiresAt }));
+    // The secret is shown once, here, and never again.
+    return this.client.post('/api/api-keys/create', this.org(organisationId, { name, role, expiresAt }), { allow: ['secret'] });
   }
   async revokeApiKey(organisationId: string, keyId: string): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/api-keys/revoke', this.org(organisationId, { keyId }));

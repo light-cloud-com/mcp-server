@@ -115,10 +115,12 @@ export async function startDeviceConnect(
       return;
     }
 
+    // The approved answer carries the session tokens, which the response
+    // filter would otherwise drop.
     const answer = await client.post<PollResponse>(
       '/api/auth/device/poll',
       { deviceCode: started.deviceCode },
-      { skipAuth: true }
+      { skipAuth: true, allow: ['token', 'refreshToken'] }
     );
 
     if (!answer.success || !answer.data) {
