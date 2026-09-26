@@ -95,8 +95,10 @@ export const DEFAULT_EXCLUDES: string[] = [
   '.tmp',
   '.tmp/**',
 
-  // Light Cloud config (include but not necessarily exclude)
-  // '.lightcloud' is intentionally NOT excluded
+  // Light Cloud's own link file: it only tells the MCP server and the CLI
+  // which app a folder belongs to. Uploaded, a static site served it to
+  // anyone at /.lightcloud.
+  '.lightcloud',
 
   // Large binary files
   '*.zip',

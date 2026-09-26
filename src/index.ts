@@ -19,7 +19,7 @@ import { packageSource } from "./upload/packager.js";
 import { describeStorageUploadFailure } from "./upload/storage-error.js";
 import { readConfig, writeConfig } from "./config/config-manager.js";
 import { generateFormattedStatus, generateFormattedList, DASHBOARD_BASE_URL } from "./utils/formatting.js";
-import type { LightCloudConfig, Application, Environment } from "./types.js";
+import type { LightCloudConfig, Application, Environment, ApiResponse } from "./types.js";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -122,9 +122,11 @@ type CreatedApp = Application & {
  * few fields the agent needs to hand the site over — where it will live,
  * where to watch it, and what to call next.
  */
-async function finishCreate(organisationId: string, app: CreatedApp, password?: string) {
+async function finishCreate(organisationId: string, app: CreatedApp, password?: string, redeploy = false) {
   const environment = app.environments?.[0];
-  let passwordProtected = false;
+  // A redeploy without a password keeps whatever gate the site has; say so
+  // rather than claim it is off.
+  let passwordProtected: boolean | 'unchanged' = redeploy && !password ? 'unchanged' : false;
   let passwordError: string | undefined;
   if (password && environment) {
     const gate = await getApi().setEnvironmentPassword(organisationId, environment.id, password);
@@ -338,11 +340,14 @@ server.tool(
     const result = await getApi().getProfile();
     if (result.success && result.data) {
       const user = result.data;
-      const orgs = user.organisations.map(o => `  - ${o.name} (id: ${o.id}, ${o.slug}) - ${o.role}`).join('\n');
+      // The profile does not always carry a slug or a name; leave out what
+      // is missing instead of printing "undefined" or an empty line.
+      const orgs = user.organisations.map(o => `  - ${o.name} (id: ${o.id}) - ${o.role}`).join('\n');
+      const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
       return {
         content: [{
           type: "text",
-          text: `Logged in as: ${user.email}\nName: ${user.first_name || ''} ${user.last_name || ''}\n\nOrganizations:\n${orgs}`
+          text: `Logged in as: ${user.email}\n${name ? `Name: ${name}\n` : ''}\nOrganizations:\n${orgs}`
         }]
       };
     }
@@ -534,19 +539,9 @@ server.tool(
   ANNOTATIONS["deploy-application"],
   async ({ organisation_id, application_id, environment_id, upload_id }) => {
     if (environment_id) {
-      if (upload_id) {
-        return {
-          content: [{ type: "text", text: "Error: upload_id applies to the whole application; omit environment_id to redeploy a new archive." }],
-        };
-      }
-      return formatResponse(await getApi().deployEnvironment(organisation_id, environment_id));
+      return formatResponse(await getApi().deployEnvironment(organisation_id, environment_id, upload_id));
     }
-    const result = await getApi().deployApplication({
-      targetOrganisationId: organisation_id,
-      applicationId: application_id,
-      uploadId: upload_id,
-    });
-    return formatResponse(result);
+    return formatResponse(await getApi().redeployProduction(organisation_id, application_id, upload_id));
   }
 );
 
@@ -1074,17 +1069,22 @@ server.tool(
       };
 
       // Step 8: Create or deploy application
-      let appResult;
+      let appResult: ApiResponse<CreatedApp>;
       const appName = name || path.basename(projectDir);
 
       if (appId) {
-        // Redeploy existing application from the archive just uploaded —
-        // without uploadId the backend rebuilds the original one.
-        appResult = await getApi().deployApplication({
-          targetOrganisationId: organisation_id,
-          applicationId: appId,
-          uploadId: uploadUrlResult.data.uploadId,
-        });
+        // Redeploy the production environment from the archive just uploaded
+        // (without uploadId the backend rebuilds the original one).
+        const deployed = await getApi().redeployProduction(organisation_id, appId, uploadUrlResult.data.uploadId);
+        if (!deployed.success || !deployed.data) {
+          appResult = { success: false, error: deployed.error };
+        } else {
+          const app = await getApi().getApplication(organisation_id, appId);
+          appResult = {
+            success: true,
+            data: { ...(app.data ?? ({ id: appId, name: name ?? appId, slug: appId } as CreatedApp)), environments: [deployed.data] },
+          };
+        }
       } else {
         // Create new application from upload
         appResult = await getApi().createApplicationFromUpload({
@@ -1116,7 +1116,7 @@ server.tool(
       };
       writeConfig(newConfig, projectDir);
 
-      const created = await finishCreate(organisation_id, appResult.data as CreatedApp, password);
+      const created = await finishCreate(organisation_id, appResult.data as CreatedApp, password, Boolean(appId));
 
       // Return success response
       return {
@@ -1161,21 +1161,26 @@ server.tool(
   async ({ organisation_id, application_id, timeout_seconds }) => {
     const deadline = Date.now() + (timeout_seconds ?? 50) * 1000;
     let last: CreatedApp | undefined;
+    let status = "unknown";
     while (Date.now() < deadline) {
       const result = await getApi().getApplication(organisation_id, application_id);
       if (!result.success || !result.data) return text(formatError(result.error));
       last = result.data as CreatedApp;
-      const environment = last.environments?.[0];
-      const status = String(environment?.status || last.status || "");
+      const env = last.environments?.find(e => e.is_production) ?? last.environments?.[0];
+      // The newest deployment record decides: right after a redeploy the
+      // environment still reads "deployed" from the previous one for a few
+      // seconds, which used to end the wait before the new code was live.
+      const deployments = env ? await getApi().listDeployments(organisation_id, env.id, { limit: 1 }) : undefined;
+      const newest = deployments?.success ? deployments.data?.deployments?.[0] : undefined;
+      status = String(newest?.status || env?.status || last.status || "");
       if (LIVE_STATUSES.has(status) || DEAD_STATUSES.has(status)) break;
       await sleep(5000);
     }
-    const environment = last?.environments?.[0];
-    const status = String(environment?.status || last?.status || "unknown");
+    const environment = last?.environments?.find(e => e.is_production) ?? last?.environments?.[0];
     const url = environment?.url || last?.url;
     const dashboardUrl = `${DASHBOARD_BASE_URL}/applications/${application_id}`;
     if (LIVE_STATUSES.has(status)) {
-      return text(JSON.stringify({ status: "live", url, dashboardUrl, environmentId: environment?.id }, null, 2));
+      return text(JSON.stringify({ status: "live", url, dashboardUrl, environmentId: environment?.id, note: "Visitors get this version within a minute, once the edge refreshes." }, null, 2));
     }
     if (DEAD_STATUSES.has(status)) {
       return text(JSON.stringify({ status: "failed", url, dashboardUrl, environmentId: environment?.id, nextStep: `Call get-environment-logs with environment_id ${environment?.id} to see why.` }, null, 2));
@@ -1186,7 +1191,7 @@ server.tool(
 
 server.tool(
   "set-password-protection",
-  "Gate a site behind a visitor password, rotate it, or make the site public again. Takes effect on the next request. Pass no password to remove the gate.",
+  "Gate a site behind a visitor password, rotate it, or make the site public again. The edge picks up the change within a minute. Pass no password to remove the gate.",
   {
     organisation_id: z.string().describe("The organization ID"),
     environment_id: z.string().describe("The environment ID"),
@@ -1196,7 +1201,7 @@ server.tool(
   async ({ organisation_id, environment_id, password }) => {
     const result = await getApi().setEnvironmentPassword(organisation_id, environment_id, password);
     if (!result.success) return text(formatError(result.error));
-    return text(password ? "Password protection is on. Visitors will be asked for the password on their next request." : "Password protection is off. The site is public.");
+    return text(password ? "Password protection is on. Within a minute, visitors are asked for the password." : "Password protection is off. Within a minute, the site is public.");
   }
 );
 

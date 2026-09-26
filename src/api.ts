@@ -297,13 +297,34 @@ export class LightCloudApi {
     });
   }
 
-  /** The backend answers with the environment, not a deployment record. */
-  async deployEnvironment(organisationId: string, environmentId: string): Promise<ApiResponse<Environment>> {
+  /**
+   * The backend answers with the environment, not a deployment record.
+   * `uploadId` deploys a freshly uploaded archive instead of rebuilding the
+   * one the app was created from (upload-based apps).
+   */
+  async deployEnvironment(organisationId: string, environmentId: string, uploadId?: string): Promise<ApiResponse<Environment>> {
     return this.client.post<Environment>('/api/environments/deploy', {
       targetOrganisationId: organisationId,
       environmentId,
+      ...(uploadId ? { uploadId } : {}),
       aiSource: 'claude_code',
     });
+  }
+
+  /**
+   * Redeploy an application's production environment. Goes through the
+   * environment route: the older /api/applications/deploy route carries no
+   * environment, so static sites fell back to a legacy hosting path (and
+   * failed) and no deployment record was written for wait-for-deployment.
+   */
+  async redeployProduction(organisationId: string, applicationId: string, uploadId?: string): Promise<ApiResponse<Environment>> {
+    const envs = await this.listEnvironments(organisationId, applicationId);
+    if (!envs.success) return { success: false, error: envs.error } as ApiResponse<Environment>;
+    const production = envs.data?.find(e => e.is_production) ?? envs.data?.[0];
+    if (!production) {
+      return { success: false, error: { message: 'This application has no environment to deploy.' } } as ApiResponse<Environment>;
+    }
+    return this.deployEnvironment(organisationId, production.id, uploadId);
   }
 
   async deleteEnvironment(organisationId: string, environmentId: string): Promise<ApiResponse<void>> {
