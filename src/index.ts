@@ -3,6 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createRequire } from "node:module";
 import { ApiClient } from "./api-client.js";
 import { LightCloudApi, type PlanCatalogEntry } from "./api.js";
 import { startNonBlockingLoginFlow, logout as performLogout } from "./auth.js";
@@ -44,7 +45,8 @@ const SERVER_INSTRUCTIONS = [
 const server = new McpServer(
   {
     name: "light-cloud",
-    version: "1.5.1",
+    // From package.json, so the version a client sees matches the one on npm.
+    version: (createRequire(import.meta.url)("../package.json") as { version: string }).version,
   },
   { instructions: SERVER_INSTRUCTIONS }
 );
