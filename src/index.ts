@@ -76,12 +76,22 @@ const text = (value: string): ToolResult => ({ content: [{ type: "text", text: v
  * choose-plan", "PAYMENT_METHOD_REQUIRED → add-payment-method") comes back
  * as a one-line instruction, so the agent acts on it instead of giving up.
  */
+/** Refusals that are answered by talking to the user, not by another tool. */
+const CODE_HINTS: Record<string, string> = {
+  DOMAIN_NOT_POINTING_HERE:
+    "Next step: tell the user which DNS record to add and that the current domain keeps working meanwhile. Call add-custom-domain again with force: true only if the user says to switch anyway.",
+  USE_DOMAIN_ROUTES:
+    "Next step: use add-custom-domain to set a domain and remove-custom-domain to remove it.",
+};
+
 function formatError(error?: { code: string; message: string; nextStep?: string }): string {
   const code = error?.code || "UNKNOWN";
   const message = error?.message || "Unknown error";
   const hint = error?.nextStep
     ? `\nNext step: call the \`${error.nextStep}\` tool, then retry this one.`
-    : "";
+    : CODE_HINTS[code]
+      ? `\n${CODE_HINTS[code]}`
+      : "";
   return `Error: ${message} (${code})${hint}`;
 }
 
@@ -1385,6 +1395,10 @@ function describePlan(plan: PlanCatalogEntry): string {
     parts.push("every database tier");
   }
   parts.push(ent.alwaysOnAllowed ? "always-on allowed" : "no always-on");
+  parts.push(ent.customDomainsAllowed === false ? "no custom domains (light-cloud.io address)" : "custom domains");
+  if (ent.brandingBadge === true || (ent.brandingBadge === undefined && plan.price === 0)) {
+    parts.push("sites carry a small 'by Light Cloud' link");
+  }
   if (typeof ent.maxInstances === "number") parts.push(`up to ${ent.maxInstances} instances per app`);
   if (ent.seats === null) parts.push("unlimited members");
   else if (typeof ent.seats === "number") {
@@ -1677,21 +1691,22 @@ server.tool(
 
 server.tool(
   "add-custom-domain",
-  "Attach a custom domain to an environment. Returns the DNS records to create; then poll get-custom-domain-status.",
+  "Attach a custom domain to an environment. Give www.example.com or example.com and both are set up (the other redirects to it). Returns every DNS record to create per hostname in dnsRecords (CNAME for a subdomain, ALIAS/ANAME for a root, certificate and ownership TXT, CAA when the domain restricts certificate issuers), each with host (the name as typed at the provider, '@' for the root), required (false = only needed to switch without downtime), reason and a live check result; removeRecords lists records to delete because they send the domain elsewhere; plus the detected DNS provider with a note on root-domain support, and plain-English issues. Tell the user the required records and the ones to delete. Then poll get-custom-domain-status. Custom domains come with the paid plans: on the free plan a first attach is refused with PLAN_ENTITLEMENT (next step: choose-plan); a domain attached earlier keeps working and can still be replaced.",
   {
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID"),
     environment_id: z.string().describe("The environment ID"),
-    domain: z.string().describe("Hostname, e.g. app.example.com"),
+    domain: z.string().describe("Hostname, e.g. www.example.com, app.example.com or example.com"),
+    force: z.boolean().optional().describe("Only after the user agreed: replace a working domain although the new one's DNS does not point here yet (refusal code DOMAIN_NOT_POINTING_HERE). The site is unreachable until the DNS record exists."),
   },
   ANNOTATIONS["add-custom-domain"],
-  async ({ organisation_id, application_id, environment_id, domain }) =>
-    formatResponse(await getApi().addCustomDomain(organisation_id, application_id, environment_id, domain))
+  async ({ organisation_id, application_id, environment_id, domain, force }) =>
+    formatResponse(await getApi().addCustomDomain(organisation_id, application_id, environment_id, domain, force === true))
 );
 
 server.tool(
   "get-custom-domain-status",
-  "Whether an environment's custom domain has verified and is serving.",
+  "Whether an environment's custom domain has verified and is serving. Re-reads every DNS record from public DNS and reports which are still missing or point elsewhere, per hostname (www and root). dnsRecords carry required / host / reason; removeRecords lists records the user must delete at their DNS provider.",
   {
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID"),

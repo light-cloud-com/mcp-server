@@ -122,6 +122,16 @@ choose-plan` (the free plan's included usage is used up), `ORGANISATION_SUSPENDE
 `deploy-from-scratch` prompt walks the whole path: connect, billing check,
 detect, create, database + environment variables, deploy.
 
+Two refusals are answered by talking to the user instead:
+
+| Code | When | What the agent does |
+|------|------|---------------------|
+| `DOMAIN_NOT_POINTING_HERE` | `add-custom-domain` would replace a domain that serves visitors with one whose DNS points elsewhere | Tells the user which record to add. Repeats with `force: true` only if the user says to switch anyway |
+| `USE_DOMAIN_ROUTES` | `update-application` / `update-environment` was given a different custom domain | Uses `add-custom-domain` or `remove-custom-domain` |
+
+Custom domains come with the paid plans. On the free plan a first `add-custom-domain` is refused with `PLAN_ENTITLEMENT` (next step: `choose-plan`); a domain attached earlier keeps working and can still be replaced. Free-plan pages carry a small "by Light Cloud" link, added at the edge; `list-plans` says which plans show it.
+
+
 ## Configuration
 
 Set a custom API endpoint (for staging/development):

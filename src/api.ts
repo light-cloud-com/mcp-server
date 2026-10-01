@@ -550,13 +550,15 @@ export class LightCloudApi {
     organisationId: string,
     applicationId: string,
     environmentId: string,
-    domain: string
+    domain: string,
+    force = false
   ): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/applications/add-domain', {
       targetOrganisationId: organisationId,
       applicationId,
       environmentId,
       domain,
+      ...(force ? { force: true } : {}),
     });
   }
 
