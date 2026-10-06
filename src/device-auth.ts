@@ -182,7 +182,7 @@ export function describePending(pending: Extract<ConnectState, { phase: 'pending
   const minutesLeft = Math.max(1, Math.round((pending.expiresAt - Date.now()) / 60000));
   const lines = [
     pending.newAccount
-      ? `No Light Cloud account exists for ${pending.email} yet — approving will create one (free plan, no card needed).`
+      ? `No Light Cloud account exists for ${pending.email} yet — approving will create one on the Free plan ($1 of usage a month, no card).`
       : `Signing in as ${pending.email}.`,
     '',
     `1. Open ${pending.verificationUrl} on any device (a phone works).`,

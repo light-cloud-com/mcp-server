@@ -650,4 +650,76 @@ describe('LightCloudApi', () => {
       expect(result.data).toHaveProperty('memoryOptions');
     });
   });
+
+  // ============ Billing ============
+
+  describe('upgradePlan', () => {
+    it('asks the one-step upgrade route, as the MCP client', async () => {
+      const checkout = { status: 'checkout', url: 'https://checkout.stripe.com/c/pay/cs_1', sessionId: 'cs_1', expiresAt: '2026-10-06T12:30:00Z' };
+      mockClient.post.mockResolvedValue(createSuccessResponse({ data: checkout }));
+
+      const result = await api.upgradePlan('org-123', 'lite', { interval: 'year' });
+
+      expect(mockClient.post).toHaveBeenCalledTimes(1);
+      expect(mockClient.post).toHaveBeenCalledWith('/api/billing/upgrade', {
+        targetOrganisationId: 'org-123',
+        planId: 'lite',
+        interval: 'year',
+        client: 'mcp',
+      });
+      expect(result.data?.data).toEqual(checkout);
+    });
+
+    it('leaves the interval out when none is given', async () => {
+      mockClient.post.mockResolvedValue(createSuccessResponse({ data: { status: 'done', planId: 'lite', pendingPlanId: null, chargeStatus: 'paid', proratedCharge: 5, chargeKind: 'first_month' } }));
+
+      await api.upgradePlan('org-123', 'lite');
+
+      expect(mockClient.post).toHaveBeenCalledWith('/api/billing/upgrade', { targetOrganisationId: 'org-123', planId: 'lite', client: 'mcp' });
+    });
+
+    it('falls back to choose-plan when the backend has no upgrade route', async () => {
+      mockClient.post
+        .mockResolvedValueOnce({ success: false, error: { code: 'HTTP_404', message: 'Not found', status: 404 } })
+        .mockResolvedValueOnce(createSuccessResponse({ data: { planId: 'lite', pendingPlanId: null, spendingLimit: 5, proratedCharge: 5, chargeStatus: 'paid', chargeKind: 'first_month', effectiveAt: null } }));
+
+      const result = await api.upgradePlan('org-123', 'lite');
+
+      expect(mockClient.post).toHaveBeenLastCalledWith('/api/billing/choose-plan', { targetOrganisationId: 'org-123', planId: 'lite' });
+      expect(result.success).toBe(true);
+      expect(result.data?.data).toEqual({ status: 'done', planId: 'lite', pendingPlanId: null, chargeStatus: 'paid', proratedCharge: 5, chargeKind: 'first_month', effectiveAt: null });
+    });
+
+    it('never retries an annual upgrade as a monthly one', async () => {
+      mockClient.post.mockResolvedValue({ success: false, error: { code: 'HTTP_404', message: 'Not found', status: 404 } });
+
+      const result = await api.upgradePlan('org-123', 'pro', { interval: 'year' });
+
+      expect(mockClient.post).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('ANNUAL_UNAVAILABLE');
+    });
+
+    it('polls the upgrade status route when hosted card setup is switched off', async () => {
+      const complete = { status: 'complete', paymentMethod: null, plan: { id: 'lite', applied: true } };
+      mockClient.post
+        .mockResolvedValueOnce({ success: false, error: { code: 'HTTP_404', message: 'Not found', status: 404 } })
+        .mockResolvedValueOnce(createSuccessResponse({ data: complete }));
+
+      const result = await api.getCheckoutSessionStatus('org-123', 'cs_1');
+
+      expect(mockClient.post).toHaveBeenNthCalledWith(1, '/api/billing/checkout-session/status', { targetOrganisationId: 'org-123', sessionId: 'cs_1' });
+      expect(mockClient.post).toHaveBeenNthCalledWith(2, '/api/billing/upgrade/status', { targetOrganisationId: 'org-123', sessionId: 'cs_1' });
+      expect(result.data?.data).toEqual(complete);
+    });
+
+    it('passes a declined card through without falling back', async () => {
+      mockClient.post.mockResolvedValue({ success: false, error: { code: 'PAYMENT_FAILED', message: 'Your card was declined.', status: 402 } });
+
+      const result = await api.upgradePlan('org-123', 'lite');
+
+      expect(mockClient.post).toHaveBeenCalledTimes(1);
+      expect(result.error?.code).toBe('PAYMENT_FAILED');
+    });
+  });
 });

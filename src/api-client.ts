@@ -1,8 +1,24 @@
 // src/api-client.ts - HTTP client for Light Cloud API
 
-import { ApiResponse } from './types.js';
+import { ApiResponse, RequiredPlan } from './types.js';
 import { getAccessToken, isAuthenticated, storeCredentials, getRefreshToken } from './token-storage.js';
 import { sanitizeForAgent } from './utils/sanitize.js';
+
+/**
+ * `requiredPlan` from a plan refusal: the plan when it names one, null when
+ * the backend says no plan lifts the limit, undefined when it says nothing.
+ */
+function readRequiredPlan(value: unknown): RequiredPlan | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object') return undefined;
+  const { id, name, price } = value as Record<string, unknown>;
+  if (typeof id !== 'string' || !id) return undefined;
+  return {
+    id,
+    name: typeof name === 'string' && name ? name : id,
+    price: typeof price === 'number' ? price : Number(price) || 0,
+  };
+}
 
 export interface RequestOptions {
   skipAuth?: boolean;
@@ -82,6 +98,8 @@ export class ApiClient {
             message: errorBody.message || response.statusText,
             status: response.status,
             nextStep: typeof errorBody.nextStep === 'string' ? errorBody.nextStep : undefined,
+            entitlement: typeof errorBody.entitlement === 'string' ? errorBody.entitlement : undefined,
+            requiredPlan: readRequiredPlan(errorBody.requiredPlan),
           }
         };
       }

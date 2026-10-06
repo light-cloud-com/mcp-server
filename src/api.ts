@@ -77,8 +77,12 @@ export interface BillingSettings {
   spending_limit: number | null;
   budget_alert_threshold: number | null;
   cap_managed?: boolean;
+  /** What the workspace pays a month: $0 on Free, whose included usage is the plan pool. */
   paid_monthly?: number;
   cap_reached?: boolean;
+  /** Optional usage limit on paid plans: extra usage, in dollars, after which server apps and deploys pause. */
+  extra_usage_limit?: number | null;
+  limit_paused?: boolean;
 }
 
 export interface PlanCatalogEntry {
@@ -86,12 +90,26 @@ export interface PlanCatalogEntry {
   name: string;
   price: number;
   entitlements?: Record<string, unknown> | null;
+  /** Usage the plan includes each cycle (backends since the 2026-10-06 redesign). */
+  includedUsage?: number;
+  /** Twelve months paid upfront; 0 on Free (backends since the 2026-10-06 redesign). */
+  annualPrice?: number | null;
 }
+
+export type BillingInterval = 'month' | 'year';
 
 export interface PlansResponse {
   plans: PlanCatalogEntry[];
   currentPlanId: string | null;
   pendingPlanId: string | null;
+  /** Why the workspace is paused: Free used its included usage, or a paid plan hit its usage limit. */
+  hardStopReason?: 'free_allowance' | 'usage_limit' | null;
+  interval?: BillingInterval;
+  annualPaidUntil?: string | null;
+  /** A scheduled switch between monthly and yearly billing. */
+  pendingInterval?: BillingInterval | null;
+  /** Optional usage limit on paid plans: extra usage, in dollars, after which server apps and deploys pause. */
+  usageLimit?: { extra: number | null; paused: boolean };
   pool: {
     total: number;
     spent: number;
@@ -116,8 +134,31 @@ export interface ChoosePlanResult {
   spendingLimit: number | null;
   proratedCharge: number;
   chargeStatus: string;
+  /** 'first_month' (from Free, full price) or 'prorated' (difference against a paid cycle). */
+  chargeKind?: string;
   effectiveAt: string | null;
 }
+
+/**
+ * POST /api/billing/upgrade. 'done': the saved card was charged, or a
+ * downgrade was scheduled. 'checkout': no card yet; Stripe Checkout takes
+ * the card and the first payment, and the plan switches when Stripe confirms.
+ */
+export type UpgradeResult =
+  | {
+      status: 'done';
+      planId: string;
+      pendingPlanId: string | null;
+      chargeStatus: string;
+      proratedCharge: number;
+      /** 'first_month' | 'first_year' (from Free), 'prorated', 'none'. */
+      chargeKind?: string;
+      effectiveAt?: string | null;
+      interval?: BillingInterval;
+      /** A switch between monthly and yearly billing that waits for the paid period. */
+      pendingInterval?: BillingInterval | null;
+    }
+  | { status: 'checkout'; url: string; sessionId: string; expiresAt: string };
 
 export interface CheckoutSession {
   url: string;
@@ -128,6 +169,8 @@ export interface CheckoutSession {
 export interface CheckoutStatus {
   status: 'open' | 'complete' | 'expired';
   paymentMethod: { brand: string; last4: string; exp_month: number; exp_year: number } | null;
+  /** Set for an upgrade checkout: the plan it buys, and whether the switch has landed. */
+  plan?: { id: string; applied: boolean };
 }
 
 export interface CreateDatabaseRequest {
@@ -140,7 +183,11 @@ export interface CreateDatabaseRequest {
   storageGb?: number;
 }
 
+const UPGRADE_STATUS_ROUTE = '/api/billing/upgrade/status';
+
 export class LightCloudApi {
+  private checkoutStatusRoute = '/api/billing/checkout-session/status';
+
   constructor(private client: ApiClient) {}
 
   // ============ Authentication ============
@@ -474,6 +521,52 @@ export class LightCloudApi {
     });
   }
 
+  /**
+   * Change plan in one step. A backend without /billing/upgrade (404) gets
+   * the older choose-plan route, which needs a saved card first; annual
+   * billing exists only on the new route, so it is never retried as monthly.
+   */
+  async upgradePlan(
+    organisationId: string,
+    planId: string,
+    options: { interval?: BillingInterval } = {}
+  ): Promise<ApiResponse<{ data: UpgradeResult }>> {
+    const result = await this.client.post<{ data: UpgradeResult }>('/api/billing/upgrade', {
+      targetOrganisationId: organisationId,
+      planId,
+      ...(options.interval ? { interval: options.interval } : {}),
+      client: 'mcp',
+    });
+    if (result.success || result.error?.status !== 404) return result;
+
+    if (options.interval === 'year') {
+      return {
+        success: false,
+        error: {
+          code: 'ANNUAL_UNAVAILABLE',
+          message: 'Annual billing is not available on this Light Cloud environment yet. Nothing was changed.',
+        },
+      };
+    }
+    const legacy = await this.choosePlan(organisationId, planId);
+    if (!legacy.success || !legacy.data) return { success: false, error: legacy.error };
+    const r = legacy.data.data;
+    return {
+      success: true,
+      data: {
+        data: {
+          status: 'done',
+          planId: r.planId,
+          pendingPlanId: r.pendingPlanId,
+          chargeStatus: r.chargeStatus,
+          proratedCharge: r.proratedCharge,
+          chargeKind: r.chargeKind,
+          effectiveAt: r.effectiveAt,
+        },
+      },
+    };
+  }
+
   async createCheckoutSession(organisationId: string): Promise<ApiResponse<{ data: CheckoutSession }>> {
     return this.client.post<{ data: CheckoutSession }>('/api/billing/checkout-session', {
       targetOrganisationId: organisationId,
@@ -481,14 +574,20 @@ export class LightCloudApi {
     });
   }
 
+  /**
+   * Where a Stripe link stands. The checkout-session route answers 404 while
+   * hosted card setup is switched off; the upgrade route's own status reads
+   * the same session without that switch.
+   */
   async getCheckoutSessionStatus(
     organisationId: string,
     sessionId: string
   ): Promise<ApiResponse<{ data: CheckoutStatus }>> {
-    return this.client.post<{ data: CheckoutStatus }>('/api/billing/checkout-session/status', {
-      targetOrganisationId: organisationId,
-      sessionId,
-    });
+    const body = { targetOrganisationId: organisationId, sessionId };
+    const result = await this.client.post<{ data: CheckoutStatus }>(this.checkoutStatusRoute, body);
+    if (result.success || result.error?.status !== 404 || this.checkoutStatusRoute === UPGRADE_STATUS_ROUTE) return result;
+    this.checkoutStatusRoute = UPGRADE_STATUS_ROUTE;
+    return this.client.post<{ data: CheckoutStatus }>(UPGRADE_STATUS_ROUTE, body);
   }
 
   // ============ Databases ============

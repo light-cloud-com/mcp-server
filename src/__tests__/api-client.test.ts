@@ -501,3 +501,55 @@ describe('ApiClient response shaping', () => {
     expect(result.data).toEqual({ id: 'env-1', environment_vars: { A: '1' } });
   });
 });
+
+describe('ApiClient plan refusals', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test-token');
+  });
+
+  it('keeps the limit and the plan that lifts it', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      statusText: 'Forbidden',
+      json: async () => ({
+        code: 'PLAN_ENTITLEMENT',
+        message: 'The Free plan includes 3 server apps and this workspace already has 3.',
+        nextStep: 'choose-plan',
+        entitlement: 'server_apps',
+        requiredPlan: { id: 'lite', name: 'Lite', price: 5 },
+      }),
+    });
+
+    const result = await new ApiClient().post('/api/applications/create', {});
+
+    expect(result.error).toMatchObject({
+      code: 'PLAN_ENTITLEMENT',
+      status: 403,
+      nextStep: 'choose-plan',
+      entitlement: 'server_apps',
+      requiredPlan: { id: 'lite', name: 'Lite', price: 5 },
+    });
+  });
+
+  it('tells "no plan lifts it" (null) apart from "not said" (absent)', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      statusText: 'Forbidden',
+      json: async () => ({ code: 'PLAN_ENTITLEMENT', message: 'No plan includes more.', requiredPlan: null }),
+    });
+    const none = await new ApiClient().post('/api/applications/create', {});
+    expect(none.error?.requiredPlan).toBeNull();
+
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      statusText: 'Forbidden',
+      json: async () => ({ code: 'PLAN_ENTITLEMENT', message: 'Not in your plan.' }),
+    });
+    const unsaid = await new ApiClient().post('/api/applications/create', {});
+    expect(unsaid.error?.requiredPlan).toBeUndefined();
+  });
+});

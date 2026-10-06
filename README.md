@@ -4,12 +4,12 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that 
 
 ## No account yet? Start here
 
-Ask Claude: **"Sign me up for Light Cloud as you@example.com"** (or "connect me to Light Cloud"). The `connect` tool creates the account — free plan, no password, no form — once you approve a short code at `console.light-cloud.com/device` from any device. Same tool signs an existing account in. Then: "deploy this project", "add a database", "put the workspace on Pro and add a card". Nothing needs the web console.
+Ask Claude: **"Sign me up for Light Cloud as you@example.com"** (or "connect me to Light Cloud"). The `connect` tool creates the account — Free plan, no card, no password, no form — once you approve a short code at `console.light-cloud.com/device` from any device. Same tool signs an existing account in. Then: "deploy this project", "add a database", "put the workspace on Lite". Nothing needs the web console.
 
 ## Features
 
 - **Sign-up and sign-in from the terminal** - `connect` with an email; a code approved on any device creates or signs in the account. No password.
-- **Billing from the conversation** - plans, included usage, card via a Stripe-hosted link
+- **Billing from the conversation** - plans, included usage, a one-step upgrade through Stripe Checkout (monthly or annual)
 - **Application management** - Create, deploy, and delete applications
 - **Environment management** - Manage staging, production, and preview environments
 - **GitHub integration** - Deploy directly from GitHub repositories
@@ -113,23 +113,34 @@ Claude, ever.
 **`login` (browser on this machine).** Opens the console's sign-in page
 with a loopback callback, as before.
 
+## Plans and upgrading
+
+Every workspace starts on **Free**: $1 of usage a month, unlimited static sites, 3 server apps, no card. When Free's $1 is used up, server apps and deploys pause until the next cycle and static sites keep serving; a free workspace is never billed. Paid plans (Lite, Starter, Pro, Business; `list-plans` has prices and limits) include usage worth their price, extra usage goes on the next invoice, and a usage limit can be chosen at checkout. Annual billing is two months free.
+
+Upgrading is one step. `choose-plan` (with `interval: "year"` for annual billing) charges a saved card, or returns a Stripe Checkout link that takes the card and the first payment together. The assistant hands over the link ("Open this link to add a card; the plan switches as soon as Stripe confirms") and `payment-method-status` waits until the plan has switched. `add-payment-method` only saves or replaces a card. No card number passes through the server.
+
 ## Refusals an agent can act on
 
 Write tools that hit a plan limit come back with a `code` and a `Next
-step:` line, for example `PLAN_ENTITLEMENT → choose-plan`,
-`PAYMENT_METHOD_REQUIRED → add-payment-method`, `POOL_EXHAUSTED →
-choose-plan` (the free plan's included usage is used up), `ORGANISATION_SUSPENDED → add-payment-method`. The
-`deploy-from-scratch` prompt walks the whole path: connect, billing check,
-detect, create, database + environment variables, deploy.
+step:` line. A plan refusal (`PLAN_ENTITLEMENT`) names the plan that
+includes what was refused and its price, for example `Next step: call the
+choose-plan tool with plan_id lite (Lite, $5/month) once the user agrees`;
+the assistant asks the user before upgrading, since `choose-plan` takes
+payment. Others: `PAYMENT_METHOD_REQUIRED → add-payment-method`,
+`POOL_EXHAUSTED → choose-plan` (Free's included usage is used up),
+`ORGANISATION_SUSPENDED → add-payment-method`. The `deploy-from-scratch`
+prompt walks the whole path: connect, billing check, detect, create,
+database + environment variables, deploy.
 
-Two refusals are answered by talking to the user instead:
+Some refusals are answered by talking to the user instead:
 
 | Code | When | What the agent does |
 |------|------|---------------------|
 | `DOMAIN_NOT_POINTING_HERE` | `add-custom-domain` would replace a domain that serves visitors with one whose DNS points elsewhere | Tells the user which record to add. Repeats with `force: true` only if the user says to switch anyway |
 | `USE_DOMAIN_ROUTES` | `update-application` / `update-environment` was given a different custom domain | Uses `add-custom-domain` or `remove-custom-domain` |
+| `PAYMENT_FAILED` | `choose-plan` charged the saved card and it was declined; the plan is unchanged | Tells the user; `add-payment-method` with `plan_id` saves a different card and switches once it is saved |
 
-Custom domains come with the paid plans. On the free plan a first `add-custom-domain` is refused with `PLAN_ENTITLEMENT` (next step: `choose-plan`); a domain attached earlier keeps working and can still be replaced. Free-plan pages carry a small "by Light Cloud" link, added at the edge; `list-plans` says which plans show it.
+Custom domains come with the paid plans. On Free a first `add-custom-domain` is refused with `PLAN_ENTITLEMENT`, naming the plan that includes them; a domain attached earlier keeps working and can still be replaced. Pages on Free carry a small "by Light Cloud" link, added at the edge; `list-plans` says which plans show it.
 
 
 ## Configuration

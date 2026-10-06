@@ -74,6 +74,13 @@ export interface DeployRequest {
 
 // ============ Response Types ============
 
+/** The plan a PLAN_ENTITLEMENT refusal names: the one that includes what was refused. */
+export interface RequiredPlan {
+  id: string;
+  name: string;
+  price: number;
+}
+
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
@@ -84,6 +91,10 @@ export interface ApiResponse<T> {
     status?: number;
     /** The backend's hint for what to call next (e.g. "add-payment-method"). */
     nextStep?: string;
+    /** On a plan refusal: which limit refused it. */
+    entitlement?: string;
+    /** On a plan refusal: the plan to choose (null: no plan includes more). */
+    requiredPlan?: RequiredPlan | null;
   };
 }
 

@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createRequire } from "node:module";
 import { ApiClient } from "./api-client.js";
-import { LightCloudApi, type PlanCatalogEntry } from "./api.js";
+import { LightCloudApi, type CheckoutStatus, type PlanCatalogEntry, type UpgradeResult } from "./api.js";
 import { startNonBlockingLoginFlow, logout as performLogout } from "./auth.js";
 import { isAuthenticated } from "./token-storage.js";
 import {
@@ -20,6 +20,20 @@ import { packageSource } from "./upload/packager.js";
 import { describeStorageUploadFailure } from "./upload/storage-error.js";
 import { readConfig, writeConfig } from "./config/config-manager.js";
 import { generateFormattedStatus, generateFormattedList, DASHBOARD_BASE_URL } from "./utils/formatting.js";
+import {
+  FREE_PLAN_ID,
+  annualPrice,
+  describePlan,
+  money,
+  pausedNotice,
+  pausedOnFree,
+  pendingIntervalNote,
+  planName,
+  price,
+  requiredPlanStep,
+  upgradeSuggestion,
+  usageLimitNote,
+} from "./utils/plans.js";
 import type { LightCloudConfig, Application, Environment, ApiResponse } from "./types.js";
 import * as path from "path";
 import * as fs from "fs";
@@ -31,13 +45,13 @@ import * as fs from "fs";
 const SERVER_INSTRUCTIONS = [
   "Light Cloud: deploy and run web apps, APIs and databases. This server covers the whole path from no account to a running app on a paid plan, without the web console.",
   "",
-  "ACCOUNTS: `connect` with an email signs the user in AND creates the account if the email has none (free plan, no password, no form). Use it whenever the user has no Light Cloud account, wants to sign up, or is not signed in. It prints a short code; the user approves it at console.light-cloud.com/device on any device; call `connect-status` until approved. Never ask the user for a password. `login` is the alternative that opens a browser on this machine.",
+  "ACCOUNTS: `connect` with an email signs the user in AND creates the account if the email has none (Free plan, no card, no password, no form). Use it whenever the user has no Light Cloud account, wants to sign up, or is not signed in. It prints a short code; the user approves it at console.light-cloud.com/device on any device; call `connect-status` until approved. Never ask the user for a password. `login` is the alternative that opens a browser on this machine.",
   "",
-  "BILLING: `get-billing` (plan, card, included usage), `list-plans`, `choose-plan`. Every plan includes usage worth its price each month; extra usage goes on the next invoice (paid plans never pause; the free plan pauses when its included usage is used up). A card is added with `add-payment-method` (Stripe-hosted link the user opens anywhere; poll `payment-method-status`). No card number ever passes through a tool.",
+  "BILLING: `get-billing` (plan, card, included usage), `list-plans`, `choose-plan`. Every workspace starts on Free: $1 of usage a month, unlimited static sites, 3 server apps, no card. When Free's $1 is used up, server apps and deploys pause and static sites keep serving; a free workspace is never billed. Paid plans include usage worth their price, and extra usage goes on the next invoice (unless the customer chose a usage limit at checkout). Annual billing is two months free. Upgrading is one step: `choose-plan` charges a saved card, or returns a Stripe Checkout link that takes the card and the first payment together; give the user the link, then poll `payment-method-status` until the plan has switched. `add-payment-method` only saves or replaces a card. No card number ever passes through a tool.",
   "",
-  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; the free plan is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
+  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; Free is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
   "",
-  "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. The `deploy-from-scratch` prompt walks the full path in order.",
+  "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. `choose-plan` takes payment: before calling it, tell the user the plan and its price (a plan refusal names both) and get a yes. The `deploy-from-scratch` prompt walks the full path in order.",
   "",
   "SCOPE: everything the console does is here — app and environment settings, folders, stacks, database admin (schema, SQL, dump, import, metrics), invoices and usage alerts, workspaces and members, API keys (paid plans), git provider links, notifications, support. Console-only by design: the account password, two-factor, and the Agents & CLI switch. A refusal with code AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED means the user turned that off under Settings → Security → Agents & CLI: tell them, do not retry, do not look for another route.",
 ].join("\n");
@@ -71,27 +85,38 @@ type ToolResult = { content: Array<{ type: "text"; text: string }> };
 
 const text = (value: string): ToolResult => ({ content: [{ type: "text", text: value }] });
 
-/**
- * A refusal the backend tagged with a next step ("PLAN_ENTITLEMENT →
- * choose-plan", "PAYMENT_METHOD_REQUIRED → add-payment-method") comes back
- * as a one-line instruction, so the agent acts on it instead of giving up.
- */
+type ApiErrorInfo = NonNullable<ApiResponse<unknown>["error"]>;
+
 /** Refusals that are answered by talking to the user, not by another tool. */
 const CODE_HINTS: Record<string, string> = {
   DOMAIN_NOT_POINTING_HERE:
     "Next step: tell the user which DNS record to add and that the current domain keeps working meanwhile. Call add-custom-domain again with force: true only if the user says to switch anyway.",
   USE_DOMAIN_ROUTES:
     "Next step: use add-custom-domain to set a domain and remove-custom-domain to remove it.",
+  PAYMENT_FAILED:
+    "Next step: tell the user the card was declined and nothing changed. add-payment-method saves a different card.",
 };
 
-function formatError(error?: { code: string; message: string; nextStep?: string }): string {
+/**
+ * A refusal the backend tagged with a next step comes back as a one-line
+ * instruction, so the agent acts on it instead of giving up. A plan refusal
+ * names the plan that includes what was refused ("choose-plan with plan_id
+ * lite"); otherwise the backend's tool ("PAYMENT_METHOD_REQUIRED →
+ * add-payment-method").
+ */
+function formatError(error?: ApiErrorInfo): string {
   const code = error?.code || "UNKNOWN";
   const message = error?.message || "Unknown error";
-  const hint = error?.nextStep
-    ? `\nNext step: call the \`${error.nextStep}\` tool, then retry this one.`
-    : CODE_HINTS[code]
-      ? `\n${CODE_HINTS[code]}`
-      : "";
+  const plan = error?.requiredPlan;
+  // null on a plan refusal: the backend found no plan that includes more.
+  const hint =
+    plan || (plan === null && code === "PLAN_ENTITLEMENT")
+      ? `\n${requiredPlanStep(plan ?? null)}`
+      : error?.nextStep
+        ? `\nNext step: call the \`${error.nextStep}\` tool, then retry this one.`
+        : CODE_HINTS[code]
+          ? `\n${CODE_HINTS[code]}`
+          : "";
   return `Error: ${message} (${code})${hint}`;
 }
 
@@ -109,13 +134,13 @@ const framedText = (body: string): ToolResult =>
   text(`${UNTRUSTED_NOTICE}\n\n\`\`\`\n${body}\n\`\`\``);
 
 /** JSON answers that carry third-party text: the notice line, then the JSON unchanged. */
-function framedResponse(result: { success: boolean; data?: unknown; error?: { code: string; message: string; nextStep?: string } }): ToolResult {
+function framedResponse(result: { success: boolean; data?: unknown; error?: ApiErrorInfo }): ToolResult {
   if (!result.success) return formatResponse(result);
   return text(`${UNTRUSTED_NOTICE}\n\n${JSON.stringify(result.data, null, 2)}`);
 }
 
 // Helper to format API responses
-function formatResponse(result: { success: boolean; data?: unknown; error?: { code: string; message: string; nextStep?: string } }): ToolResult {
+function formatResponse(result: { success: boolean; data?: unknown; error?: ApiErrorInfo }): ToolResult {
   if (result.success) {
     return text(JSON.stringify(result.data, null, 2));
   }
@@ -214,7 +239,8 @@ const ANNOTATIONS: Record<string, { title: string; readOnlyHint: boolean; destru
   "list-plans": { title: "List plans", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "choose-plan": { title: "Choose plan", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "add-payment-method": { title: "Add payment method", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  "payment-method-status": { title: "Payment method status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  // Not read-only: with a plan named on add-payment-method it switches (and charges) once the card is saved.
+  "payment-method-status": { title: "Payment method status", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "list-databases": { title: "List databases", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "get-database": { title: "Get database", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "create-database": { title: "Create database", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -278,7 +304,7 @@ server.tool(
 server.tool(
   "connect",
   "SIGN UP or sign in to Light Cloud with an email — the only account step needed. An email with no account gets one " +
-  "(free plan, no password, no form) when the user approves a short code at console.light-cloud.com/device from any device; " +
+  "(Free plan, no card, no password, no form) when the user approves a short code at console.light-cloud.com/device from any device; " +
   "an existing account just signs in. No browser is needed on this machine. Then call connect-status to wait for the approval. " +
   "Use this whenever the user is not signed in, has no account, or asks to sign up / create an account / get started.",
   {
@@ -321,7 +347,7 @@ server.tool(
         return text(
           `${state.newAccount ? "Account created and signed in" : "Signed in"} as ${state.email}.\n\nWorkspaces:\n${orgs}\n\n` +
           (state.newAccount
-            ? "The workspace is on the free plan; a card is only needed for a paid plan (see list-plans / add-payment-method)."
+            ? "The workspace is on Free ($1 of usage a month, no card). A card is asked for only when upgrading (choose-plan)."
             : "Use get-billing to check the plan before creating resources.")
         );
       }
@@ -1363,53 +1389,94 @@ server.tool(
 
 // ============ Billing Tools ============
 
-const money = (value: number) => `$${value.toFixed(2)}`;
 /** The backend's pool.pct is a ratio (0.37); print it as a percentage. */
 const pct = (ratio: number | null | undefined) =>
   typeof ratio === "number" ? Math.round(ratio * 100) : 0;
 
-const SIZE_NAMES: Record<string, string> = { nano: "Nano", micro: "Micro", small: "Small", medium: "Medium", large: "Large" };
-const KIND_NAMES: Record<string, string> = { static: "static sites", ssr: "server-rendered frontends", service: "server apps" };
+/** "$5/month or $50/year", or "$0, no card" for Free. */
+function priceLine(plan: PlanCatalogEntry): string {
+  if (plan.price <= 0) return "$0, no card";
+  const yearly = annualPrice(plan);
+  return `${price(plan.price)}/month${yearly ? ` or ${price(yearly)}/year` : ""}`;
+}
 
-/** One readable line per plan: the usage it includes, then its limits. */
-function describePlan(plan: PlanCatalogEntry): string {
-  const ent = (plan.entitlements ?? {}) as Record<string, unknown>;
-  const included = typeof ent.usageCredits === "number" ? ent.usageCredits : plan.price;
-  const parts: string[] = [`includes ${money(included)} of usage a month`];
-  if (Array.isArray(ent.appKinds)) {
-    parts.push(`runs ${(ent.appKinds as string[]).map((k) => KIND_NAMES[k] ?? k).join(" and ")} only`);
+/** What an upgrade took from the card, if anything. */
+function chargeNote(r: { proratedCharge: number; chargeKind?: string }): string {
+  if (!(r.proratedCharge > 0)) return "";
+  const what =
+    r.chargeKind === "prorated" ? " (the difference for the rest of the paid period)"
+      : r.chargeKind === "first_month" ? " for the first month"
+        : r.chargeKind === "first_year" ? " for the first year"
+          : "";
+  return ` Charged ${money(r.proratedCharge)}${what}.`;
+}
+
+/** The answer to a plan change that went through without a Stripe page. */
+function planChanged(r: Extract<UpgradeResult, { status: "done" }>): string {
+  const interval = pendingIntervalNote(r.pendingInterval);
+  const later = interval ? ` ${interval}` : "";
+  if (r.pendingPlanId) {
+    return `Downgrade scheduled: ${planName({ id: r.planId })} until ${r.effectiveAt?.slice(0, 10) ?? "the end of the paid period"}, then ${planName({ id: r.pendingPlanId })}.${later}`;
   }
-  const counts: string[] = [];
-  if (typeof ent.services === "number") counts.push(`${ent.services} server app${ent.services === 1 ? "" : "s"}`);
-  if (typeof ent.sites === "number") counts.push(`${ent.sites} static site${ent.sites === 1 ? "" : "s"}`);
-  if (counts.length > 0) parts.push(counts.join(", "));
-  parts.push(
-    Array.isArray(ent.containerSizes)
-      ? `sizes ${(ent.containerSizes as string[]).map((s) => SIZE_NAMES[s] ?? s).join("/")}`
-      : "every size"
-  );
-  if (Array.isArray(ent.databaseTiers)) {
-    const tiers = ent.databaseTiers as string[];
-    parts.push(tiers.length > 0 ? `database tiers ${tiers.join("/")}` : "no databases");
-  } else {
-    parts.push("every database tier");
+  const billed = r.interval === "year" ? ", billed yearly" : "";
+  return `Workspace is now on ${planName({ id: r.planId })} (${r.planId})${billed}.${chargeNote(r)}${later}`;
+}
+
+/** choose-plan's refusals, each with the step that gets past it. */
+function choosePlanError(error: ApiErrorInfo | undefined, planId: string): string {
+  switch (error?.code) {
+    case "PAYMENT_FAILED":
+      return `Error: ${error.message} (PAYMENT_FAILED)\nNext step: tell the user the card was declined and the plan is unchanged; for a different card, call the \`add-payment-method\` tool with plan_id \`${planId}\` — the plan switches once the new card is saved.`;
+    case "PAYMENT_METHOD_REQUIRED":
+      return `Error: ${error.message} (PAYMENT_METHOD_REQUIRED)\nNext step: call the \`add-payment-method\` tool with plan_id \`${planId}\` — the plan switches once the card is saved.`;
+    case "ANNUAL_UNAVAILABLE":
+      return `Error: ${error.message} (ANNUAL_UNAVAILABLE)\nNext step: ask the user whether monthly billing is fine; if so, call choose-plan again without interval.`;
+    default:
+      return formatError(error);
   }
-  parts.push(ent.alwaysOnAllowed ? "always-on allowed" : "no always-on");
-  parts.push(ent.customDomainsAllowed === false ? "no custom domains (light-cloud.io address)" : "custom domains");
-  if (ent.brandingBadge === true || (ent.brandingBadge === undefined && plan.price === 0)) {
-    parts.push("sites carry a small 'by Light Cloud' link");
-  }
-  if (typeof ent.maxInstances === "number") parts.push(`up to ${ent.maxInstances} instances per app`);
-  if (ent.seats === null) parts.push("unlimited members");
-  else if (typeof ent.seats === "number") {
-    parts.push(`${ent.seats} member${ent.seats === 1 ? "" : "s"}${ent.extraSeatAllowed ? " + extra members at $9 each" : ""}`);
-  }
-  return parts.join(" · ");
+}
+
+/** A Stripe link this process handed out; payment-method-status polls it. */
+interface PendingCheckout {
+  organisationId: string;
+  sessionId: string;
+  /** Unknown for a link from another session, polled by session_id. */
+  url?: string;
+  expiresAt: number;
+  /** 'upgrade': choose-plan's link, done once the plan has switched. 'card': add-payment-method's. */
+  purpose: "upgrade" | "card";
+  /** The plan an upgrade link buys, or the plan to switch to once a card is saved. */
+  planId?: string;
+}
+
+// One Stripe link at a time per MCP process; status polls read it back.
+let pendingCheckout: PendingCheckout | null = null;
+
+const minutesLeft = (expiresAt: number) => Math.max(1, Math.round((expiresAt - Date.now()) / 60000));
+
+/** No card yet: hand the user Stripe Checkout, which takes the card and the first payment together. */
+function checkoutLink(organisationId: string, planId: string, link: { url: string; sessionId: string; expiresAt: string }): string {
+  pendingCheckout = {
+    organisationId,
+    sessionId: link.sessionId,
+    url: link.url,
+    expiresAt: new Date(link.expiresAt).getTime(),
+    planId,
+    purpose: "upgrade",
+  };
+  return [
+    "Open this link to add a card; the plan switches as soon as Stripe confirms.",
+    "",
+    link.url,
+    "",
+    `Give the user the link and the sentence above (Stripe-hosted, the card never passes through here; the link expires in ${minutesLeft(pendingCheckout.expiresAt)} minutes). ` +
+      `Then call payment-method-status (session_id ${link.sessionId}): it waits until the plan has switched.`,
+  ].join("\n");
 }
 
 server.tool(
   "get-billing",
-  "Plan, card on file and usage this cycle against what the plan includes. Call before creating resources: it says whether a card or a plan change is needed.",
+  "Plan, card on file and usage this cycle against what the plan includes. Call before creating resources: it says whether the workspace is paused and which plan would bring it back.",
   {
     organisation_id: z.string().describe("The organization ID"),
   },
@@ -1422,23 +1489,29 @@ server.tool(
     if (!plans.success || !plans.data) return text(formatError(plans.error));
 
     const p = plans.data.data;
-    const current = p.plans.find((plan) => plan.id === (p.currentPlanId ?? "hobby"));
+    const currentId = p.currentPlanId ?? FREE_PLAN_ID;
+    const current = p.plans.find((plan) => plan.id === currentId);
+    const onFree = (current?.price ?? 0) <= 0;
+    const yearly = current && p.interval === "year" ? annualPrice(current) : null;
+    const pending = p.pendingPlanId ? (p.plans.find((plan) => plan.id === p.pendingPlanId) ?? { id: p.pendingPlanId }) : null;
     const card = summary.success && summary.data ? summary.data.data.payment_method : null;
+    const cycleEnd = summary.success ? (summary.data?.data.billing_cycle.next_billing_date?.slice(0, 10) ?? null) : null;
+    const stoppedOnFree = pausedOnFree(p.hardStopReason, current);
+    const limit = onFree ? null : usageLimitNote(p.usageLimit);
     const lines = [
-      `Plan: ${current ? `${current.name} (${current.id}) — ${money(current.price)}/month` : p.currentPlanId ?? "free"}`,
-      p.pendingPlanId ? `Pending change at next cycle: ${p.pendingPlanId}` : null,
-      `Card on file: ${card ? `${card.brand} •••• ${card.last4}` : "none"}`,
+      `Plan: ${current ? `${planName(current)} (${current.id}) — ${yearly ? `${price(yearly)}/year${p.annualPaidUntil ? `, paid until ${p.annualPaidUntil.slice(0, 10)}` : ""}` : priceLine(current)}` : planName({ id: currentId })}`,
+      pending ? `Pending change at next cycle: ${planName(pending)}` : null,
+      pendingIntervalNote(p.pendingInterval),
+      `Card on file: ${card ? `${card.brand} •••• ${card.last4}` : onFree ? "none (Free needs no card)" : "none"}`,
       `Usage this cycle: ${money(p.pool.spent)} of ${money(p.pool.total)} included (${pct(p.pool.pct)}%)` +
         (p.pool.overage > 0 ? `, extra usage ${money(p.pool.overage)} — goes on the next invoice` : ""),
-      p.hardStopped
-        ? "STATUS: the free plan's included usage is used up — projects are paused until an upgrade (choose-plan) or the next cycle."
-        : null,
-      summary.success && summary.data?.data.billing_cycle.next_billing_date
-        ? `Next invoice: ${summary.data.data.billing_cycle.next_billing_date.slice(0, 10)}`
-        : null,
+      limit ? `Usage limit: ${limit}` : null,
+      p.hardStopped ? `STATUS: paused. ${pausedNotice(stoppedOnFree, p.pool.total, cycleEnd)}` : null,
+      p.hardStopped && stoppedOnFree ? upgradeSuggestion(p.plans) : null,
+      cycleEnd ? `${onFree ? "Usage resets" : "Next invoice"}: ${cycleEnd}` : null,
       "",
-      current && current.price === 0
-        ? "Paid plans need a card: add-payment-method, then choose-plan."
+      onFree
+        ? "Free needs no card. To upgrade, call choose-plan once the user agrees: it charges a saved card, or returns one Stripe Checkout link that takes the card and the first payment. list-plans compares plans."
         : "Use list-plans to compare plans; choose-plan to change.",
     ].filter((line): line is string => line !== null);
     return text(lines.join("\n"));
@@ -1447,7 +1520,7 @@ server.tool(
 
 server.tool(
   "list-plans",
-  "The plans a workspace can be on: price, the usage each includes, and its limits (apps, sites, sizes, database tiers, always-on, members).",
+  "The plans a workspace can be on: monthly and annual price, the usage each includes, and its limits (server apps, static sites, sizes, databases, always-on, custom domains, members).",
   {
     organisation_id: z.string().describe("The organization ID"),
   },
@@ -1456,45 +1529,48 @@ server.tool(
     const result = await getApi().getPlans(organisation_id);
     if (!result.success || !result.data) return text(formatError(result.error));
     const p = result.data.data;
+    const currentId = p.currentPlanId ?? FREE_PLAN_ID;
     const rows = p.plans.map((plan) => {
-      const marker = plan.id === (p.currentPlanId ?? "hobby") ? " (current)" : "";
-      return `- ${plan.id}: ${plan.name}${marker} — ${plan.price > 0 ? `${money(plan.price)}/month` : "free"}\n    ${describePlan(plan)}`;
+      const marker = plan.id === currentId ? " (current)" : "";
+      return `- ${plan.id}: ${planName(plan)}${marker} — ${priceLine(plan)}\n    ${describePlan(plan)}`;
     });
     return text(
-      `Plans (every plan includes usage worth its price; extra usage goes on the next invoice — paid plans never pause, the free plan pauses when its included usage is used up):\n${rows.join("\n")}\n\nchoose-plan(plan_id) to switch. Paid plans need a card on file (add-payment-method).`
+      [
+        "Plans. Free never bills: when its included usage is used up, server apps and deploys pause and static sites keep serving. " +
+          "Paid plans include usage worth their price; extra usage goes on the next invoice, unless a usage limit is chosen at checkout. Annual billing is two months free.",
+        ...rows,
+        "",
+        "choose-plan with plan_id (and interval 'year' for annual billing) switches in one step: it charges a saved card, or returns a Stripe Checkout link that takes the card and the first payment together.",
+      ].join("\n")
     );
   }
 );
 
 server.tool(
   "choose-plan",
-  "Put a workspace on a plan. Free plan: immediate, no card. Paid plan: charges the card on file for the first month; " +
-  "without a card the tool says so — call add-payment-method first. Downgrades take effect at the next cycle.",
+  "Put a workspace on a plan, in one step. An upgrade charges the saved card (the first payment, or from a paid plan the prorated difference); " +
+  "with no card saved it returns a Stripe Checkout link that takes the card and the first payment together: give the user the link, then call payment-method-status until the plan has switched. " +
+  "Downgrades, including back to Free, take effect at the next cycle. It takes payment, so confirm the plan and its price with the user first.",
   {
     organisation_id: z.string().describe("The organization ID"),
-    plan_id: z.string().describe("Plan id from list-plans (e.g. hobby, starter, pro)"),
+    plan_id: z.string().describe("Plan id from list-plans: hobby (Free), lite, starter, pro or business"),
+    interval: z.enum(["month", "year"]).optional().describe("Billing for a paid plan: 'month' or 'year' (paid upfront, two months free). Omit to keep the workspace's current billing (monthly for a first subscription)."),
   },
   ANNOTATIONS["choose-plan"],
-  async ({ organisation_id, plan_id }) => {
-    const result = await getApi().choosePlan(organisation_id, plan_id);
-    if (!result.success || !result.data) return text(formatError(result.error));
+  async ({ organisation_id, plan_id, interval }) => {
+    const result = await getApi().upgradePlan(organisation_id, plan_id, { interval });
+    if (!result.success || !result.data) return text(choosePlanError(result.error, plan_id));
     const r = result.data.data;
-    if (r.pendingPlanId) {
-      return text(`Downgrade scheduled: ${r.planId} until ${r.effectiveAt?.slice(0, 10) ?? "the next cycle"}, then ${r.pendingPlanId}.`);
-    }
-    const charge = r.proratedCharge > 0 ? ` Charged ${money(r.proratedCharge)} (${r.chargeStatus}).` : "";
-    return text(`Workspace is now on plan ${r.planId}.${charge}`);
+    return text(r.status === "checkout" ? checkoutLink(organisation_id, plan_id, r) : planChanged(r));
   }
 );
 
-// One card-setup link at a time per MCP process; status polls read it back.
-let pendingCheckout: { organisationId: string; sessionId: string; url: string; expiresAt: number; planId?: string } | null = null;
-
 server.tool(
   "add-payment-method",
-  "Save a card for a workspace's owner through a Stripe-hosted page. Prints a link to open on any device " +
-  "(no card details ever pass through this tool). Then call payment-method-status to wait for the card to be saved. " +
-  "Optionally names a plan to switch to once the card is on file.",
+  "Save or replace the card for a workspace's owner through a Stripe-hosted page: prints a link to open on any device " +
+  "(no card details ever pass through this tool), then call payment-method-status to wait for it. " +
+  "Not needed to upgrade (choose-plan takes the card and the first payment in one step); use it to replace a declined card, " +
+  "optionally naming the plan to switch to once the new card is saved.",
   {
     organisation_id: z.string().describe("The organization ID"),
     plan_id: z.string().optional().describe("Plan to switch to once the card is saved (from list-plans)"),
@@ -1515,56 +1591,88 @@ server.tool(
       url,
       expiresAt: new Date(expiresAt).getTime(),
       planId: plan_id,
+      purpose: "card",
     };
     return text([
       "Open this link on any device to save a card (Stripe-hosted; the card never passes through here):",
       "",
       url,
       "",
-      `The link expires in ${Math.round((pendingCheckout.expiresAt - Date.now()) / 60000)} minutes. Call payment-method-status to wait for it.`,
+      `The link expires in ${minutesLeft(pendingCheckout.expiresAt)} minutes. Call payment-method-status (session_id ${sessionId}) to wait for it.`,
     ].join("\n"));
   }
 );
 
 server.tool(
   "payment-method-status",
-  "Wait for the card from add-payment-method to be saved (up to ~45 seconds per call; call again while it reports open). " +
-  "Switches the plan afterwards if add-payment-method was given one.",
-  {},
+  "Wait for a Stripe link from choose-plan or add-payment-method (up to ~45 seconds per call; call again while it reports open). " +
+  "For a choose-plan link it reports when the plan has switched; for add-payment-method, when the card is saved, then switches plan if one was named.",
+  {
+    session_id: z.string().optional().describe("The session_id choose-plan or add-payment-method printed; defaults to the latest link from this server"),
+    organisation_id: z.string().optional().describe("The organization ID; needed with session_id for a link from an earlier session"),
+  },
   ANNOTATIONS["payment-method-status"],
-  async () => {
-    if (!pendingCheckout) {
-      return text("No card setup is pending. Call add-payment-method first (or get-billing to see the card on file).");
+  async ({ session_id, organisation_id }) => {
+    const watched: PendingCheckout | null =
+      !session_id || pendingCheckout?.sessionId === session_id
+        ? pendingCheckout
+        : organisation_id
+          ? { organisationId: organisation_id, sessionId: session_id, expiresAt: Number.POSITIVE_INFINITY, purpose: "card" }
+          : null;
+    if (!watched) {
+      return text(session_id
+        ? "Pass organisation_id together with session_id to check a link from an earlier session."
+        : "No Stripe link is pending. choose-plan (to upgrade) or add-payment-method (to save a card) starts one; get-billing shows the plan and the card on file.");
     }
-    const { organisationId, sessionId, url, planId } = pendingCheckout;
-    const deadline = Math.min(Date.now() + 45_000, pendingCheckout.expiresAt);
-    let last: "open" | "complete" | "expired" = "open";
+    const forget = () => {
+      if (pendingCheckout?.sessionId === watched.sessionId) pendingCheckout = null;
+    };
+
+    const deadline = Math.min(Date.now() + 45_000, watched.expiresAt);
+    let last: CheckoutStatus | null = null;
     for (;;) {
-      const status = await getApi().getCheckoutSessionStatus(organisationId, sessionId);
+      const status = await getApi().getCheckoutSessionStatus(watched.organisationId, watched.sessionId);
       if (status.success && status.data) {
-        last = status.data.data.status;
-        if (last === "complete") {
-          pendingCheckout = null;
-          const card = status.data.data.paymentMethod;
-          let summary = `Card saved${card ? `: ${card.brand} •••• ${card.last4}` : ""}.`;
-          if (planId) {
-            const chosen = await getApi().choosePlan(organisationId, planId);
-            summary += chosen.success && chosen.data
-              ? ` Workspace is now on plan ${chosen.data.data.planId}${chosen.data.data.proratedCharge > 0 ? ` (charged ${money(chosen.data.data.proratedCharge)})` : ""}.`
-              : ` Plan change failed: ${formatError(chosen.error)}`;
-          }
-          return text(summary);
-        }
-        if (last === "expired") break;
+        last = status.data.data;
+        // An upgrade is done when the plan has switched, not when Stripe says complete.
+        if (last.status === "expired" || (last.status === "complete" && (!last.plan || last.plan.applied))) break;
+      } else if (status.error?.status && status.error.status >= 400 && status.error.status < 500 && status.error.status !== 429) {
+        return text(formatError(status.error));
       }
       if (Date.now() >= deadline) break;
-      await new Promise((resolve) => setTimeout(resolve, 4000));
+      await sleep(4000);
     }
-    if (last === "expired" || Date.now() >= pendingCheckout.expiresAt) {
-      pendingCheckout = null;
-      return text("The card setup link expired before a card was saved. Call add-payment-method again for a new link.");
+
+    if (last?.status === "expired" || Date.now() >= watched.expiresAt) {
+      forget();
+      return text(watched.purpose === "upgrade"
+        ? "The Stripe link expired before it was completed: nothing was charged and the plan is unchanged. Call choose-plan again for a new link."
+        : "The card setup link expired before a card was saved. Call add-payment-method again for a new link.");
     }
-    return text(`No card saved yet. The link is still open:\n${url}\nCall payment-method-status again to keep waiting.`);
+    if (last?.status !== "complete") {
+      return text(`Not completed yet.${watched.url ? ` The link is still open:\n${watched.url}\n` : " "}Call payment-method-status again to keep waiting.`);
+    }
+
+    const card = last.paymentMethod;
+    const saved = card ? `Card saved: ${card.brand} •••• ${card.last4}. ` : "";
+    if (last.plan) {
+      if (!last.plan.applied) {
+        return text(`${saved}Stripe confirmed the payment; the switch to ${planName({ id: last.plan.id })} is still being applied. Call payment-method-status again in a moment.`);
+      }
+      forget();
+      return text(`${saved}Workspace is now on ${planName({ id: last.plan.id })} (${last.plan.id}).`);
+    }
+    forget();
+    if (watched.purpose === "upgrade") {
+      return text(`${saved}Stripe confirmed. The plan switches within a minute; get-billing shows it.`);
+    }
+    if (!watched.planId) return text(saved.trim() || "Card saved.");
+
+    // A card saved to switch plan: the switch charges it now.
+    const chosen = await getApi().upgradePlan(watched.organisationId, watched.planId);
+    if (!chosen.success || !chosen.data) return text(`${saved}Plan change failed. ${choosePlanError(chosen.error, watched.planId)}`);
+    const r = chosen.data.data;
+    return text(saved + (r.status === "checkout" ? checkoutLink(watched.organisationId, watched.planId, r) : planChanged(r)));
   }
 );
 
@@ -1593,8 +1701,8 @@ server.tool(
 
 server.tool(
   "create-database",
-  "Create a managed database. Default: a PostgreSQL database on the shared pool (tier shared-dev, included in every plan). " +
-  "Dedicated tiers (dev, starter, pro …) depend on the plan — a refusal names the next step. " +
+  "Create a managed database. Default: a PostgreSQL database on the shared pool (tier shared-dev). " +
+  "Databases come with the paid plans (Lite includes one shared database; Free has none); how many and which dedicated tiers (dev, starter, pro …) depend on the plan — a refusal names the plan that includes it. " +
   "Provisioning is asynchronous: poll get-database until status is ready, then get-database-connection-string.",
   {
     organisation_id: z.string().describe("The organization ID"),
@@ -1691,7 +1799,7 @@ server.tool(
 
 server.tool(
   "add-custom-domain",
-  "Attach a custom domain to an environment. Give www.example.com or example.com and both are set up (the other redirects to it). Returns every DNS record to create per hostname in dnsRecords (CNAME for a subdomain, ALIAS/ANAME for a root, certificate and ownership TXT, CAA when the domain restricts certificate issuers), each with host (the name as typed at the provider, '@' for the root), required (false = only needed to switch without downtime), reason and a live check result; removeRecords lists records to delete because they send the domain elsewhere; plus the detected DNS provider with a note on root-domain support, and plain-English issues. Tell the user the required records and the ones to delete. Then poll get-custom-domain-status. Custom domains come with the paid plans: on the free plan a first attach is refused with PLAN_ENTITLEMENT (next step: choose-plan); a domain attached earlier keeps working and can still be replaced.",
+  "Attach a custom domain to an environment. Give www.example.com or example.com and both are set up (the other redirects to it). Returns every DNS record to create per hostname in dnsRecords (CNAME for a subdomain, ALIAS/ANAME for a root, certificate and ownership TXT, CAA when the domain restricts certificate issuers), each with host (the name as typed at the provider, '@' for the root), required (false = only needed to switch without downtime), reason and a live check result; removeRecords lists records to delete because they send the domain elsewhere; plus the detected DNS provider with a note on root-domain support, and plain-English issues. Tell the user the required records and the ones to delete. Then poll get-custom-domain-status. Custom domains come with the paid plans: on Free a first attach is refused with PLAN_ENTITLEMENT, naming the plan that includes them and its price; a domain attached earlier keeps working and can still be replaced.",
   {
     organisation_id: z.string().describe("The organization ID"),
     application_id: z.string().describe("The application ID"),
@@ -2044,7 +2152,9 @@ server.tool(
         (p.pool.overage > 0
           ? ` — ${money(p.pool.overage)} extra usage so far, goes on the next invoice`
           : ` — ${money(p.pool.remaining)} left`),
-      p.hardStopped ? "The free plan's included usage is used up — projects are paused until choose-plan or the next cycle." : null,
+      p.hardStopped
+        ? `Paused: ${pausedNotice(pausedOnFree(p.hardStopReason, p.plans.find((plan) => plan.id === (p.currentPlanId ?? FREE_PLAN_ID))), p.pool.total)}`
+        : null,
       p.pool.cycleStarted === false ? "The first billing cycle has not started yet; run time until then is not billed." : null,
       "",
       running.length > 0 ? "Running:" : "Nothing running this cycle.",
@@ -2105,18 +2215,23 @@ server.tool(
 
 server.tool(
   "get-usage-alerts",
-  "The workspace's usage alerts: the included usage for the cycle (set by the plan — emails go out at 80% and when it is used up) and the optional extra alert amount. There is no spending cap: on a paid plan extra usage goes on the next invoice, on the free plan the workspace pauses.",
+  "The workspace's usage alerts: the included usage for the cycle (set by the plan; emails go out at 80% and when it is used up) and the optional extra alert amount. On Free, server apps and deploys pause when the included usage is used up (static sites keep serving; never billed). On a paid plan extra usage goes on the next invoice, unless a usage limit was chosen at checkout.",
   { organisation_id: orgArg },
   { title: "Get usage alerts", ...RO },
   async ({ organisation_id }) => {
-    const result = await getApi().getBillingSettings(organisation_id);
+    const [result, plans] = await Promise.all([getApi().getBillingSettings(organisation_id), getApi().getPlans(organisation_id)]);
     if (!result.success || !result.data) return text(formatError(result.error));
     const s = result.data.data;
-    const included = typeof s.paid_monthly === "number" ? s.paid_monthly : s.spending_limit;
+    // paid_monthly is what the workspace pays ($0 on Free); the pool is what the plan includes.
+    const pool = plans.success ? plans.data?.data : undefined;
+    const included = pool ? pool.pool.total : typeof s.paid_monthly === "number" && s.paid_monthly > 0 ? s.paid_monthly : s.spending_limit;
+    const onFree = pool ? (pool.plans.find((plan) => plan.id === (pool.currentPlanId ?? FREE_PLAN_ID))?.price ?? 0) <= 0 : false;
+    const limit = !onFree && "extra_usage_limit" in s ? usageLimitNote({ extra: s.extra_usage_limit ?? null, paused: s.limit_paused }) : null;
     return text(
       [
         `Included usage this cycle: ${typeof included === "number" ? money(included) : "not set"} (set by the plan; emails at 80% and when it is used up always send).`,
         `Extra alert: ${typeof s.budget_alert_threshold === "number" ? `at ${money(s.budget_alert_threshold)} of usage` : "none"}.`,
+        limit ? `Usage limit: ${limit}.` : null,
         s.cap_reached ? "The included usage for this cycle is used up." : null,
         "set-usage-alerts changes the extra alert; choose-plan changes how much usage is included.",
       ]
@@ -2128,7 +2243,7 @@ server.tool(
 
 server.tool(
   "set-usage-alerts",
-  "Set one extra usage-alert email at a dollar amount of usage this cycle (the 80% and 100% emails always send). Pass null to remove it. Alerts only email — nothing pauses, and there is no spending cap to set: a bigger plan includes more usage.",
+  "Set one extra usage-alert email at a dollar amount of usage this cycle (the 80% and 100% emails always send). Pass null to remove it. Alerts only email and never pause anything; a bigger plan includes more usage.",
   { organisation_id: orgArg, alert_at_usd: z.number().min(0).nullable() },
   { title: "Set usage alerts", ...RW },
   async ({ organisation_id, alert_at_usd }) => {
@@ -2175,7 +2290,7 @@ server.tool(
 
 server.tool(
   "create-workspace",
-  "Create a new workspace (organisation) owned by the signed-in user, on the free plan.",
+  "Create a new workspace (organisation) owned by the signed-in user. Each person gets one Free workspace: a further one is created, but its answer says needsPaidPlan and it creates apps and deploys only once it is on a paid plan (choose-plan, once the user agrees).",
   { name: z.string().min(2) },
   { title: "Create workspace", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async ({ name }) => formatResponse(await getApi().createOrganisation(name))
@@ -2302,7 +2417,7 @@ server.tool(
 
 server.tool(
   "create-api-key",
-  "Create an API key for CI and other machines (lc login --api-key, or LIGHT_CLOUD_API_KEY). Paid plans only — a refusal names choose-plan as the next step. The secret is returned once; hand it to the user, never write it into files.",
+  "Create an API key for CI and other machines (lc login --api-key, or LIGHT_CLOUD_API_KEY). Paid plans only — on Free a refusal names the plan to choose. The secret is returned once; hand it to the user, never write it into files.",
   { organisation_id: orgArg, name: z.string().min(1), role: z.enum(["admin", "user"]).optional(), expires_at: z.string().optional().describe("ISO date; omit for no expiry") },
   { title: "Create API key", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async ({ organisation_id, name, role, expires_at }) => formatResponse(await getApi().createApiKey(organisation_id, name, role, expires_at))
@@ -2357,10 +2472,10 @@ server.prompt(
         content: {
           type: "text",
           text: [
-            "Deploy the project in the current directory to Light Cloud using the light-cloud MCP tools. Ask me everything you need in ONE message before touching anything: which workspace (only if I belong to several), and whether the site should be public or password-protected (and the password if so). Do not ask about plans or payment unless a tool refuses; the free plan is the default.",
+            "Deploy the project in the current directory to Light Cloud using the light-cloud MCP tools. Ask me everything you need in ONE message before touching anything: which workspace (only if I belong to several), and whether the site should be public or password-protected (and the password if so). Do not ask about plans or payment unless a tool refuses; Free is the default.",
             "",
             "1. `whoami`. If not signed in: `connect` with " + (email ? `the email ${email}` : "my email (ask me for it)") + ", show me the code and link, then `connect-status` until approved.",
-            "2. `get-billing` for the workspace. On the free plan, continue. If a later step is refused with PLAN_ENTITLEMENT (not in the plan) or POOL_EXHAUSTED (the free plan's included usage is used up), show me `list-plans`, ask which plan, then `add-payment-method` (if no card) + `payment-method-status` until saved, and `choose-plan`.",
+            "2. `get-billing` for the workspace. On Free, continue. If a later step is refused with PLAN_ENTITLEMENT (not in the plan; the refusal names the plan that includes it) or POOL_EXHAUSTED (Free's included usage is used up), tell me that plan and its price and ask before upgrading. Then `choose-plan`; if it returns a Stripe link, give it to me and call `payment-method-status` until the plan has switched. Then retry the step.",
             "3. `detect-local-framework` and `detect-local-git` in the project directory.",
             "4. Git-backed and pushed to GitHub: `get-github-installation-status`; if not installed, give me `get-github-install-url` and wait; then `create-application` from the repository. Otherwise `upload-and-deploy` (it packages the folder itself). Pass `password` to either when I asked for a protected site.",
             "5. If detection says the framework needs a database: `create-database` (shared-dev), poll `get-database` until ready, `get-database-connection-string`, and `set-environment-variables` with it under the variable name the framework expects.",
