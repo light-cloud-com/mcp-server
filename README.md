@@ -140,7 +140,7 @@ Some refusals are answered by talking to the user instead:
 | `USE_DOMAIN_ROUTES` | `update-application` / `update-environment` was given a different custom domain | Uses `add-custom-domain` or `remove-custom-domain` |
 | `PAYMENT_FAILED` | `choose-plan` charged the saved card and it was declined; the plan is unchanged | Tells the user; `add-payment-method` with `plan_id` saves a different card and switches once it is saved |
 
-Custom domains come with the paid plans. On Free a first `add-custom-domain` is refused with `PLAN_ENTITLEMENT`, naming the plan that includes them; a domain attached earlier keeps working and can still be replaced. Pages on Free carry a small "by Light Cloud" link, added at the edge; `list-plans` says which plans show it.
+Custom domains come with the paid plans. On Free `add-custom-domain` is refused with `PLAN_ENTITLEMENT`, naming the plan that includes them. A domain already on a Free workspace goes on hold 14 days after the owner is emailed (the site keeps its light-cloud.io address), and a database left on Free stops then too, with its data kept; a paid plan brings both back. Downgrading to Free with a database is refused with `DATABASES_ON_FREE` until it is deleted. Pages on Free carry a small "by Light Cloud" link, added at the edge; `list-plans` says which plans show it.
 
 
 ## Configuration
