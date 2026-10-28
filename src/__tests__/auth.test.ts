@@ -112,13 +112,13 @@ describe('auth', () => {
 
   describe('refreshAccessToken', () => {
     it('should refresh token successfully', async () => {
-      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('valid-refresh-token');
+      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('valid refresh token');
       mockFetch.mockResolvedValue({
         ok: true,
         status: 200,
         json: async () => ({
-          token: 'new-access-token',
-          refreshToken: 'new-refresh-token',
+          token: 'new access token',
+          refreshToken: 'new refresh token',
         }),
       });
 
@@ -132,12 +132,12 @@ describe('auth', () => {
           headers: expect.objectContaining({
             'Content-Type': 'application/json',
           }),
-          body: JSON.stringify({ refreshToken: 'valid-refresh-token' }),
+          body: JSON.stringify({ refreshToken: 'valid refresh token' }),
         })
       );
       expect(tokenStorage.storeCredentials).toHaveBeenCalledWith({
-        accessToken: 'new-access-token',
-        refreshToken: 'new-refresh-token',
+        accessToken: 'new access token',
+        refreshToken: 'new refresh token',
       });
     });
 
@@ -165,7 +165,7 @@ describe('auth', () => {
     });
 
     it('should return false when network error occurs', async () => {
-      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('valid-refresh-token');
+      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('valid refresh token');
       mockFetch.mockRejectedValue(new Error('Network error'));
 
       const result = await refreshAccessToken();
@@ -174,12 +174,12 @@ describe('auth', () => {
     });
 
     it('should preserve original refresh token if new one not provided', async () => {
-      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('original-refresh-token');
+      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('old refresh token');
       mockFetch.mockResolvedValue({
         ok: true,
         status: 200,
         json: async () => ({
-          token: 'new-access-token',
+          token: 'new access token',
           // No new refreshToken
         }),
       });
@@ -187,8 +187,8 @@ describe('auth', () => {
       await refreshAccessToken();
 
       expect(tokenStorage.storeCredentials).toHaveBeenCalledWith({
-        accessToken: 'new-access-token',
-        refreshToken: 'original-refresh-token',
+        accessToken: 'new access token',
+        refreshToken: 'old refresh token',
       });
     });
 
@@ -198,7 +198,7 @@ describe('auth', () => {
       mockFetch.mockResolvedValue({
         ok: true,
         status: 200,
-        json: async () => ({ accessToken: 'new-token' }),
+        json: async () => ({ accessToken: 'new token' }),
       });
 
       await refreshAccessToken();
@@ -363,7 +363,7 @@ describe('auth', () => {
 
       // Simulate successful callback
       const mockReq = {
-        url: '/callback?token=access-123&refreshToken=refresh-456&state=mock-state-123',
+        url: '/callback?token=acc-123&refreshToken=ref-456&state=mock-state-123',
       };
       const mockRes = {
         writeHead: vi.fn(),
@@ -373,8 +373,8 @@ describe('auth', () => {
       requestHandler(mockReq, mockRes);
 
       expect(tokenStorage.storeCredentials).toHaveBeenCalledWith({
-        accessToken: 'access-123',
-        refreshToken: 'refresh-456',
+        accessToken: 'acc-123',
+        refreshToken: 'ref-456',
       });
       expect(mockRes.writeHead).toHaveBeenCalledWith(
         302,
@@ -436,7 +436,7 @@ describe('auth', () => {
       startNonBlockingLoginFlow();
 
       const mockReq = {
-        url: '/callback?token=access-123&state=wrong-state',
+        url: '/callback?token=acc-123&state=wrong-state',
       };
       const mockRes = {
         writeHead: vi.fn(),

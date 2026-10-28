@@ -10,7 +10,7 @@
  * Tool and prompt descriptions are read from the running server by the host
  * (`tools_generated`), the names listed here are for the directory page.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +103,7 @@ writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest, null, 2) + '
 
 const out = join(release, `light-cloud-${pkg.version}.mcpb`);
 rmSync(out, { force: true });
-execSync(`npx --yes @anthropic-ai/mcpb validate "${join(build, 'manifest.json')}"`, { stdio: 'inherit' });
-execSync(`npx --yes @anthropic-ai/mcpb pack "${build}" "${out}"`, { stdio: 'inherit' });
+// Arguments as an array: paths are never parsed by a shell.
+execFileSync('npx', ['--yes', '@anthropic-ai/mcpb', 'validate', join(build, 'manifest.json')], { stdio: 'inherit' });
+execFileSync('npx', ['--yes', '@anthropic-ai/mcpb', 'pack', build, out], { stdio: 'inherit' });
 console.log(`\nBundle: ${out}`);

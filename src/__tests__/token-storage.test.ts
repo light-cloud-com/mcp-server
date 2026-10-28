@@ -46,8 +46,8 @@ describe('token-storage', () => {
 
     it('should return credentials when file exists and is valid', () => {
       const credentials: StoredCredentials = {
-        accessToken: 'test-access-token',
-        refreshToken: 'test-refresh-token',
+        accessToken: 'test access token',
+        refreshToken: 'test refresh token',
         expiresAt: '2024-12-31T23:59:59Z',
       };
 
@@ -62,7 +62,7 @@ describe('token-storage', () => {
 
     it('should return credentials without optional fields', () => {
       const credentials: StoredCredentials = {
-        accessToken: 'test-access-token',
+        accessToken: 'test access token',
       };
 
       vi.mocked(fs.existsSync).mockReturnValue(true);
@@ -102,7 +102,7 @@ describe('token-storage', () => {
       vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
 
       const credentials: StoredCredentials = {
-        accessToken: 'test-token',
+        accessToken: 'test token',
       };
 
       storeCredentials(credentials);
@@ -116,7 +116,7 @@ describe('token-storage', () => {
       vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
 
       const credentials: StoredCredentials = {
-        accessToken: 'test-token',
+        accessToken: 'test token',
       };
 
       storeCredentials(credentials);
@@ -129,8 +129,8 @@ describe('token-storage', () => {
       vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
 
       const credentials: StoredCredentials = {
-        accessToken: 'test-access-token',
-        refreshToken: 'test-refresh-token',
+        accessToken: 'test access token',
+        refreshToken: 'test refresh token',
       };
 
       storeCredentials(credentials);
@@ -147,8 +147,8 @@ describe('token-storage', () => {
       vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
 
       const credentials: StoredCredentials = {
-        accessToken: 'access-123',
-        refreshToken: 'refresh-456',
+        accessToken: 'access 123',
+        refreshToken: 'refresh 456',
         expiresAt: '2024-12-31T23:59:59Z',
       };
 
@@ -157,8 +157,8 @@ describe('token-storage', () => {
       const writtenContent = vi.mocked(fs.writeFileSync).mock.calls[0][1] as string;
       const parsed = JSON.parse(writtenContent);
 
-      expect(parsed.accessToken).toBe('access-123');
-      expect(parsed.refreshToken).toBe('refresh-456');
+      expect(parsed.accessToken).toBe('access 123');
+      expect(parsed.refreshToken).toBe('refresh 456');
       expect(parsed.expiresAt).toBe('2024-12-31T23:59:59Z');
     });
   });
@@ -193,8 +193,8 @@ describe('token-storage', () => {
   describe('getAccessToken', () => {
     it('should return access token when credentials exist', () => {
       const credentials: StoredCredentials = {
-        accessToken: 'my-access-token',
-        refreshToken: 'my-refresh-token',
+        accessToken: 'my access token',
+        refreshToken: 'my refresh token',
       };
 
       vi.mocked(fs.existsSync).mockReturnValue(true);
@@ -202,7 +202,7 @@ describe('token-storage', () => {
 
       const result = getAccessToken();
 
-      expect(result).toBe('my-access-token');
+      expect(result).toBe('my access token');
     });
 
     it('should return null when credentials do not exist', () => {
@@ -226,8 +226,8 @@ describe('token-storage', () => {
   describe('getRefreshToken', () => {
     it('should return refresh token when credentials exist', () => {
       const credentials: StoredCredentials = {
-        accessToken: 'my-access-token',
-        refreshToken: 'my-refresh-token',
+        accessToken: 'my access token',
+        refreshToken: 'my refresh token',
       };
 
       vi.mocked(fs.existsSync).mockReturnValue(true);
@@ -235,12 +235,12 @@ describe('token-storage', () => {
 
       const result = getRefreshToken();
 
-      expect(result).toBe('my-refresh-token');
+      expect(result).toBe('my refresh token');
     });
 
     it('should return null when refresh token is not present', () => {
       const credentials: StoredCredentials = {
-        accessToken: 'my-access-token',
+        accessToken: 'my access token',
       };
 
       vi.mocked(fs.existsSync).mockReturnValue(true);
@@ -263,7 +263,7 @@ describe('token-storage', () => {
   describe('isAuthenticated', () => {
     it('should return true when access token exists', () => {
       const credentials: StoredCredentials = {
-        accessToken: 'my-access-token',
+        accessToken: 'my access token',
       };
 
       vi.mocked(fs.existsSync).mockReturnValue(true);

@@ -37,7 +37,7 @@ describe('ApiClient', () => {
       delete process.env.LIGHT_CLOUD_CONSOLE_URL;
 
       const defaultClient = new ApiClient();
-      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test-token');
+      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test token');
 
       // Make a request to check the URL
       mockFetch.mockResolvedValue({
@@ -59,7 +59,7 @@ describe('ApiClient', () => {
       process.env.LIGHT_CLOUD_CONSOLE_URL = 'https://custom-console.example.com';
 
       const customClient = new ApiClient();
-      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test-token');
+      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test token');
 
       mockFetch.mockResolvedValue({
         ok: true,
@@ -348,13 +348,13 @@ describe('ApiClient', () => {
         ok: true,
         status: 200,
         json: async () => ({
-          accessToken: 'new-access-token',
-          refreshToken: 'new-refresh-token',
+          accessToken: 'new access token',
+          refreshToken: 'new refresh token',
         }),
       });
 
       // Update mock to return new token for retry
-      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('new-access-token');
+      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('new access token');
 
       // Retry succeeds
       mockFetch.mockResolvedValueOnce({
@@ -368,8 +368,8 @@ describe('ApiClient', () => {
       expect(result.success).toBe(true);
       expect(result.data).toEqual({ data: 'success' });
       expect(tokenStorage.storeCredentials).toHaveBeenCalledWith({
-        accessToken: 'new-access-token',
-        refreshToken: 'new-refresh-token',
+        accessToken: 'new access token',
+        refreshToken: 'new refresh token',
       });
       expect(mockFetch).toHaveBeenCalledTimes(3);
     });
@@ -438,7 +438,7 @@ describe('ApiClient', () => {
     });
 
     it('should preserve original refresh token if new one not provided', async () => {
-      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('original-refresh');
+      vi.mocked(tokenStorage.getRefreshToken).mockReturnValue('old refresh');
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -451,12 +451,12 @@ describe('ApiClient', () => {
         ok: true,
         status: 200,
         json: async () => ({
-          accessToken: 'new-access-token',
+          accessToken: 'new access token',
           // No refreshToken in response
         }),
       });
 
-      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('new-access-token');
+      vi.mocked(tokenStorage.getAccessToken).mockReturnValue('new access token');
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -467,8 +467,8 @@ describe('ApiClient', () => {
       await client.get('/api/protected');
 
       expect(tokenStorage.storeCredentials).toHaveBeenCalledWith({
-        accessToken: 'new-access-token',
-        refreshToken: 'original-refresh',
+        accessToken: 'new access token',
+        refreshToken: 'old refresh',
       });
     });
   });
@@ -477,7 +477,7 @@ describe('ApiClient', () => {
 describe('ApiClient response shaping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test-token');
+    vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test token');
   });
 
   it('hides secret keys from ordinary responses', async () => {
@@ -505,7 +505,7 @@ describe('ApiClient response shaping', () => {
 describe('ApiClient plan refusals', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test-token');
+    vi.mocked(tokenStorage.getAccessToken).mockReturnValue('test token');
   });
 
   it('keeps the limit and the plan that lifts it', async () => {
