@@ -145,25 +145,14 @@ Custom domains come with the paid plans. On Free `add-custom-domain` is refused 
 
 ## Configuration
 
-Set a custom API endpoint (for staging/development):
+No configuration is needed. The server talks to Light Cloud at these addresses by default:
 
-```bash
-# Environment variable
-export LIGHT_CLOUD_API_URL=https://api.staging-light-cloud.com
+| Variable | Default |
+|---|---|
+| `LIGHT_CLOUD_API_URL` | `https://api.light-cloud.com` |
+| `LIGHT_CLOUD_CONSOLE_URL` | `https://console.light-cloud.com` |
 
-# Or in Claude Desktop config
-{
-  "mcpServers": {
-    "light-cloud": {
-      "command": "npx",
-      "args": ["light-cloud-mcp-server"],
-      "env": {
-        "LIGHT_CLOUD_API_URL": "https://api.staging-light-cloud.com"
-      }
-    }
-  }
-}
-```
+Set them only if you were given a different endpoint.
 
 ## Development
 
