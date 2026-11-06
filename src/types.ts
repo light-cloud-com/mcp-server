@@ -51,6 +51,9 @@ export interface CreateApplicationFromUploadRequest {
   outputDirectory?: string;
   containerPort?: number;
   environmentVars?: Record<string, string>;
+  /** Attribution: the template this upload started from (records a template deploy). */
+  templateSlug?: string;
+  via?: 'mcp';
 }
 
 export interface UploadRequestUrlRequest {

@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createRequire } from "node:module";
 import { ApiClient } from "./api-client.js";
-import { LightCloudApi, type CheckoutStatus, type PlanCatalogEntry, type UpgradeResult } from "./api.js";
+import { LightCloudApi, type CheckoutStatus, type PlanCatalogEntry, type TemplateDeployRequest, type UpgradeResult } from "./api.js";
 import { startNonBlockingLoginFlow, logout as performLogout } from "./auth.js";
 import { isAuthenticated } from "./token-storage.js";
 import {
@@ -18,6 +18,7 @@ import { detectLocalFramework } from "./detection/framework-detector.js";
 import { detectLocalGit } from "./detection/git-detector.js";
 import { packageSource } from "./upload/packager.js";
 import { describeStorageUploadFailure } from "./upload/storage-error.js";
+import { assertEmptyFolder, unpackTemplate } from "./upload/unpack.js";
 import { readConfig, writeConfig } from "./config/config-manager.js";
 import { generateFormattedStatus, generateFormattedList, DASHBOARD_BASE_URL } from "./utils/formatting.js";
 import {
@@ -49,7 +50,7 @@ const SERVER_INSTRUCTIONS = [
   "",
   "BILLING: `get-billing` (plan, card, included usage), `list-plans`, `choose-plan`. Every workspace starts on Free: $1 of usage a month, unlimited static sites, 3 server apps, no card. When Free's $1 is used up, server apps and deploys pause and static sites keep serving; a free workspace is never billed. Paid plans include usage worth their price, and extra usage goes on the next invoice (unless the customer chose a usage limit at checkout). Annual billing is two months free. Upgrading is one step: `choose-plan` charges a saved card, or returns a Stripe Checkout link that takes the card and the first payment together; give the user the link, then poll `payment-method-status` until the plan has switched. `add-payment-method` only saves or replaces a card. No card number ever passes through a tool.",
   "",
-  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; Free is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
+  "DEPLOY: `detect-local-framework` then `upload-and-deploy` for a local folder, or `create-application` from a GitHub repository. Both take an optional `password` that gates the site behind a visitor password from the first deploy. Afterwards call `wait-for-deployment` — it blocks until the build finishes and returns the live URL. Starting from nothing (\"I need a site for my bakery\"): `search-templates`, offer two or three matches with their demo links, `get-template` for the one picked, ask only what its customize hints and required variables need, then `deploy-template` — it copies the code into the user's git provider (or deploys it read-only) and returns the live URL. To adapt the code first (templates without a database): `deploy-template` with copy `local`, edit the files the hints name, then `upload-and-deploy` with `template_slug` and the required variables in `environment_vars`. Secrets go through `set-environment-variables`; never repeat one back. Before deploying, ask the user only what the tools cannot infer, in one message: the workspace (when they belong to several), and whether the site should be public or password-protected. Never ask about plans or payment unless a tool refuses; Free is the default. Hand over with the live URL (and the password, if any) — no infrastructure details, no other links. Databases: `create-database` (shared pool by default) then `get-database-connection-string` and `set-environment-variables`. Custom domains, scaling, logs and `set-password-protection` have their own tools.",
   "",
   "REFUSALS: an error that ends with `Next step: call X` means call tool X (choose-plan, add-payment-method, connect) and retry — do not stop. `choose-plan` takes payment: before calling it, tell the user the plan and its price (a plan refusal names both) and get a yes. The `deploy-from-scratch` prompt walks the full path in order.",
   "",
@@ -95,6 +96,10 @@ const CODE_HINTS: Record<string, string> = {
     "Next step: use add-custom-domain to set a domain and remove-custom-domain to remove it.",
   PAYMENT_FAILED:
     "Next step: tell the user the card was declined and nothing changed. add-payment-method saves a different card.",
+  ENV_REQUIRED:
+    "Next step: ask the user for the missing variables, then call this tool again with them in environment_vars.",
+  UPLOAD_NEEDS_REPO:
+    "Next step: this template needs a database, which an upload cannot create. Call deploy-template with copy 'repo' (or 'readonly') instead.",
 };
 
 /**
@@ -1024,9 +1029,11 @@ server.tool(
     application_id: z.string().optional().describe("Existing application ID to redeploy to"),
     name: z.string().optional().describe("Application name. Defaults to folder name for new apps."),
     password: z.string().min(6).max(128).optional().describe("Visitor password to gate the site behind (6-128 characters). Omit for a public site. On a redeploy the existing setting is kept unless this is given."),
+    template_slug: z.string().optional().describe("The template the folder came from (deploy-template with copy 'local'), so the new app counts as a deploy of it"),
+    environment_vars: z.record(z.string(), z.string()).optional().describe("Variables for a new app; with template_slug, values for the template's required variables (get-template lists them)"),
   },
   ANNOTATIONS["upload-and-deploy"],
-  async ({ organisation_id, directory, application_id, name, password }) => {
+  async ({ organisation_id, directory, application_id, name, password, template_slug, environment_vars }) => {
     try {
       const projectDir = directory || process.cwd();
 
@@ -1135,14 +1142,13 @@ server.tool(
           buildCommand: detection.buildCommand,
           outputDirectory: detection.deploymentType === 'static' ? detection.outputDirectory : undefined,
           containerPort: detection.deploymentType === 'container' ? detection.containerPort : undefined,
+          environmentVars: environment_vars,
+          ...(template_slug ? { templateSlug: template_slug, via: 'mcp' as const } : {}),
         });
       }
 
-      if (!appResult.success || !appResult.data) {
-        return {
-          content: [{ type: "text", text: `Error ${appId ? 'deploying' : 'creating'} application: ${appResult.error?.message || 'Unknown error'}` }],
-        };
-      }
+      // formatError carries the next step (plan refusals, missing template variables).
+      if (!appResult.success || !appResult.data) return text(formatError(appResult.error));
 
       // Step 9: Save config for future deployments
       const newConfig: LightCloudConfig = {
@@ -1189,43 +1195,134 @@ server.tool(
 
 server.tool(
   "wait-for-deployment",
-  "Block until an application's current deployment finishes, then return the live URL. Call this right after upload-and-deploy or create-application instead of polling status yourself. Returns early with status 'building' if the timeout passes — call it again.",
+  "Block until an application's current deployment finishes, then return the live URL. Call this right after upload-and-deploy or create-application instead of polling status yourself (after deploy-template, pass the template_deploy_id it returned while the app is still being set up). Returns early with status 'building' if the timeout passes — call it again.",
   {
     organisation_id: z.string().describe("The organization ID"),
-    application_id: z.string().describe("The application ID"),
+    application_id: z.string().optional().describe("The application ID"),
+    template_deploy_id: z.string().optional().describe("From deploy-template or create-stack, when they returned no application yet"),
     timeout_seconds: z.number().int().min(10).max(300).optional().describe("How long to wait before returning the in-progress status (default 50, keeps within client tool timeouts)"),
   },
   ANNOTATIONS["wait-for-deployment"],
-  async ({ organisation_id, application_id, timeout_seconds }) => {
+  async ({ organisation_id, application_id, template_deploy_id, timeout_seconds }) => {
     const deadline = Date.now() + (timeout_seconds ?? 50) * 1000;
-    let last: CreatedApp | undefined;
-    let status = "unknown";
-    while (Date.now() < deadline) {
-      const result = await getApi().getApplication(organisation_id, application_id);
-      if (!result.success || !result.data) return text(formatError(result.error));
-      last = result.data as CreatedApp;
-      const env = last.environments?.find(e => e.is_production) ?? last.environments?.[0];
-      // The newest deployment record decides: right after a redeploy the
-      // environment still reads "deployed" from the previous one for a few
-      // seconds, which used to end the wait before the new code was live.
-      const deployments = env ? await getApi().listDeployments(organisation_id, env.id, { limit: 1 }) : undefined;
-      const newest = deployments?.success ? deployments.data?.deployments?.[0] : undefined;
-      status = String(newest?.status || env?.status || last.status || "");
-      if (LIVE_STATUSES.has(status) || DEAD_STATUSES.has(status)) break;
-      await sleep(5000);
-    }
-    const environment = last?.environments?.find(e => e.is_production) ?? last?.environments?.[0];
-    const url = environment?.url || last?.url;
-    const dashboardUrl = `${DASHBOARD_BASE_URL}/applications/${application_id}`;
-    if (LIVE_STATUSES.has(status)) {
-      return text(JSON.stringify({ status: "live", url, dashboardUrl, environmentId: environment?.id, note: "Visitors get this version within a minute, once the edge refreshes." }, null, 2));
-    }
-    if (DEAD_STATUSES.has(status)) {
-      return text(JSON.stringify({ status: "failed", url, dashboardUrl, environmentId: environment?.id, nextStep: `Call get-environment-logs with environment_id ${environment?.id} to see why.` }, null, 2));
-    }
-    return text(JSON.stringify({ status: "building", detail: status, url, dashboardUrl, environmentId: environment?.id, nextStep: "Still building — call wait-for-deployment again." }, null, 2));
+    if (application_id) return waitForApplication(organisation_id, application_id, deadline);
+    if (template_deploy_id) return followTemplateDeploy(organisation_id, template_deploy_id, deadline);
+    return text("Error: pass application_id, or the template_deploy_id deploy-template returned.");
   }
 );
+
+/** Until the application's newest deployment ends (live URL) or the deadline passes. */
+async function waitForApplication(organisation_id: string, application_id: string, deadline: number): Promise<ToolResult> {
+  let last: CreatedApp | undefined;
+  let status = "unknown";
+  do {
+    const result = await getApi().getApplication(organisation_id, application_id);
+    if (!result.success || !result.data) return text(formatError(result.error));
+    last = result.data as CreatedApp;
+    const env = last.environments?.find(e => e.is_production) ?? last.environments?.[0];
+    // The newest deployment record decides: right after a redeploy the
+    // environment still reads "deployed" from the previous one for a few
+    // seconds, which used to end the wait before the new code was live.
+    const deployments = env ? await getApi().listDeployments(organisation_id, env.id, { limit: 1 }) : undefined;
+    const newest = deployments?.success ? deployments.data?.deployments?.[0] : undefined;
+    status = String(newest?.status || env?.status || last.status || "");
+    if (LIVE_STATUSES.has(status) || DEAD_STATUSES.has(status)) break;
+    await sleep(5000);
+  } while (Date.now() < deadline);
+  const environment = last?.environments?.find(e => e.is_production) ?? last?.environments?.[0];
+  const url = environment?.url || last?.url;
+  const dashboardUrl = `${DASHBOARD_BASE_URL}/applications/${application_id}`;
+  if (LIVE_STATUSES.has(status)) {
+    return text(JSON.stringify({ status: "live", url, dashboardUrl, environmentId: environment?.id, note: "Visitors get this version within a minute, once the edge refreshes." }, null, 2));
+  }
+  if (DEAD_STATUSES.has(status)) {
+    return text(JSON.stringify({ status: "failed", url, dashboardUrl, environmentId: environment?.id, nextStep: `Call get-environment-logs with environment_id ${environment?.id} to see why.` }, null, 2));
+  }
+  return text(JSON.stringify({ status: "building", detail: status, url, dashboardUrl, environmentId: environment?.id, nextStep: `Still building — call wait-for-deployment again with application_id ${application_id}.` }, null, 2));
+}
+
+// ============ Templates ============
+
+/**
+ * Start a template deploy. Without a copy mode it copies into the
+ * workspace's connected git provider when there is one (the deploy plan
+ * lists them), else deploys read-only from the template's repository.
+ */
+async function startTemplateDeploy(
+  slug: string,
+  request: Omit<TemplateDeployRequest, "copy" | "via"> & { copy?: TemplateDeployRequest["copy"] }
+): Promise<ApiResponse<{ templateDeployId: string; applicationId: string | null }>> {
+  let { copy, provider } = request;
+  if (copy !== "readonly" && !provider) {
+    const plan = await getApi().getTemplateDeployPlan(slug, request.organisationId);
+    if (!plan.success || !plan.data) return { success: false, error: plan.error };
+    // Templates switched off: the plan answers 200 with this blocker.
+    const flagOff = plan.data.blockers?.find((blocker) => blocker.code === "FLAG_OFF");
+    if (flagOff) return { success: false, error: { code: "FLAG_OFF", message: flagOff.message } };
+    provider = plan.data.copyOptions?.providers?.[0];
+    copy ??= provider ? "repo" : "readonly";
+  }
+  return getApi().deployTemplate(slug, { ...request, copy: copy ?? "repo", provider, via: "mcp" });
+}
+
+/** After a template deploy starts: wait for its application, then for the build, within one deadline. */
+async function followTemplateDeploy(organisationId: string, templateDeployId: string, deadline: number): Promise<ToolResult> {
+  const result = await getApi().waitForTemplateApplication(templateDeployId, deadline);
+  const deploy = result.data;
+  if (!result.success || !deploy) return text(formatError(result.error));
+  if (deploy.status === "failed") {
+    return text(JSON.stringify({
+      status: "failed",
+      error: deploy.error,
+      templateDeployId,
+      ...(deploy.environmentId ? { nextStep: `Call get-environment-logs with environment_id ${deploy.environmentId} to see why.` } : {}),
+    }, null, 2));
+  }
+  if (deploy.applicationId) return waitForApplication(organisationId, deploy.applicationId, deadline);
+  return text(JSON.stringify({
+    status: deploy.status,
+    templateDeployId,
+    nextStep: `Still setting up — call wait-for-deployment with template_deploy_id ${templateDeployId}.`,
+  }, null, 2));
+}
+
+/** deploy-template with copy 'local': the template's code in a folder, ready to edit and upload. */
+async function downloadTemplate(slug: string, organisationId: string, name: string, localFolder?: string): Promise<ToolResult> {
+  try {
+    const folder = path.resolve(localFolder || slug);
+    assertEmptyFolder(folder);
+    const detail = await getApi().getTemplate(slug);
+    const template = detail.data?.template;
+    if (!detail.success || !template) return text(formatError(detail.error));
+    // An upload cannot create a database (create-from-upload refuses with UPLOAD_NEEDS_REPO): say so before downloading.
+    if (template.creates.database) {
+      return text(`Error: ${template.name} needs a database, which an upload cannot create, so it cannot be edited locally first. Call deploy-template with copy 'repo' (or 'readonly') instead.`);
+    }
+    const download = await getApi().getTemplateDownload(slug, organisationId);
+    if (!download.success || !download.data) return text(formatError(download.error));
+    // A public archive (codeload.github.com): fetched without the Light Cloud token.
+    const archive = await fetch(download.data.tarballUrl);
+    if (!archive.ok) return text(`Error: could not download the template (HTTP ${archive.status}).`);
+    const files = unpackTemplate(Buffer.from(await archive.arrayBuffer()), folder, download.data.rootDirectory);
+    // Filled and generated values are set by the platform; required ones come from the user.
+    const required = template.variables.filter((variable) => variable.kind === "required").map((variable) => variable.name);
+    const ask = required.length ? ` and for ${required.join(", ")}` : "";
+    const vars = required.length ? `, template_slug ${slug} and environment_vars holding ${required.join(", ")}` : ` and template_slug ${slug}`;
+    return framedResponse({
+      success: true,
+      data: {
+        folder,
+        fileCount: files.length,
+        files: files.slice(0, 200),
+        customize: template.customize,
+        variables: template.variables,
+        nextStep: `Ask the user what the customize hints ask${ask}, edit those files, then call upload-and-deploy with directory ${folder}, name ${name}${vars}.`,
+      },
+    });
+  } catch (error) {
+    return text(`Error in deploy-template: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 server.tool(
   "set-password-protection",
@@ -2018,7 +2115,7 @@ server.tool(
 
 server.tool(
   "create-stack",
-  "Create an app from a stack template (for example the Open SaaS / Wasp stack): a repository is created for the user, the app is set up from it and deployed. Stacks are listed by get-platform-config when enabled for the workspace.",
+  "Create an app from a stack template (for example the Open SaaS / Wasp stack): a repository is created for the user, the app is set up from it and deployed. The same as deploy-template with the stack id as the slug; waits like it and returns the live URL. Stacks are listed by get-platform-config when enabled for the workspace.",
   {
     organisation_id: orgArg,
     stack_id: z.string(),
@@ -2029,8 +2126,71 @@ server.tool(
     environment_vars: z.record(z.string(), z.string()).optional(),
   },
   { title: "Create from stack", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  async ({ organisation_id, stack_id, name, repo_name, region, folder_id, environment_vars }) =>
-    formatResponse(await getApi().createStack(organisation_id, stack_id, { name, repoName: repo_name, region, projectId: folder_id, environmentVars: environment_vars }))
+  async ({ organisation_id, stack_id, name, repo_name, region, folder_id, environment_vars }) => {
+    const started = await startTemplateDeploy(stack_id, { organisationId: organisation_id, name, repoName: repo_name, region, folderId: folder_id, environmentVars: environment_vars });
+    if (started.success && started.data) return followTemplateDeploy(organisation_id, started.data.templateDeployId, Date.now() + 50_000);
+    // Templates switched off, or a backend without them: the stack route, as before.
+    if (!["FLAG_OFF", "NOT_FOUND", "HTTP_404"].includes(started.error?.code ?? "")) return text(formatError(started.error));
+    return formatResponse(await getApi().createStack(organisation_id, stack_id, { name, repoName: repo_name, region, projectId: folder_id, environmentVars: environment_vars }));
+  }
+);
+
+// -- templates -------------------------------------------------------------------
+
+server.tool(
+  "search-templates",
+  "Search the template gallery: ready-made websites, apps and starters that deploy in one step (no sign-in needed). Offer the user two or three matches with their demo links, then call get-template for the one they pick.",
+  {
+    query: z.string().optional().describe("Words to match, e.g. bakery, portfolio, blog"),
+    category: z.string().optional().describe("A kind (websites, apps, starters) or a category: landing, portfolio, blog, docs, personal, business, dashboards, ai, cms, productivity, tools, frontend, fullstack, backend"),
+    runs: z.string().optional().describe("Comma list of static, server, database (database needs a paid plan)"),
+    language: z.string().optional().describe("Comma list of languages, e.g. JavaScript,Python"),
+    framework: z.string().optional().describe("Comma list of framework ids, e.g. nextjs,astro"),
+    price: z.string().optional().describe("free or premium"),
+    page: z.number().int().min(1).optional(),
+  },
+  { title: "Search templates", ...RO },
+  async (search) => framedResponse(await getApi().searchTemplates(search))
+);
+
+server.tool(
+  "get-template",
+  "One template: what it creates, the plan it needs, its variables (filled, generated, required or optional) and its customize hints (what to ask the user, which files hold the answer). With organisation_id while signed in, also deployPlan: whether that workspace can deploy it (blockers name the plan to choose) and where the code can be copied.",
+  {
+    slug: z.string().describe("Template slug from search-templates"),
+    organisation_id: z.string().optional().describe("Workspace to check the deploy plan for (needs sign-in)"),
+  },
+  { title: "Get template", ...RO },
+  async ({ slug, organisation_id }) => {
+    const detail = await getApi().getTemplate(slug);
+    if (!detail.success || !organisation_id || !isAuthenticated()) return framedResponse(detail);
+    const plan = await getApi().getTemplateDeployPlan(slug, organisation_id);
+    if (!plan.success || !plan.data) return framedResponse({ success: true, data: { ...detail.data, deployPlanError: formatError(plan.error) } });
+    const { template: _sameAsDetail, ...deployPlan } = plan.data;
+    return framedResponse({ success: true, data: { ...detail.data, deployPlan } });
+  }
+);
+
+server.tool(
+  "deploy-template",
+  "Deploy a template as a new app. copy 'repo' copies the code into the workspace's connected git provider and deploys from the copy; 'readonly' deploys from the template's own repository; omitted = repo when a git provider is connected, else readonly. Waits for the app and returns the live URL (or 'building' with the next call). copy 'local' (templates without a database) instead writes the code into local_folder and returns the files written and the customize hints: ask the user what the hints ask, edit those files, then call upload-and-deploy with that directory, template_slug and the required variables in environment_vars.",
+  {
+    slug: z.string().describe("Template slug from search-templates"),
+    organisation_id: orgArg,
+    name: z.string().describe("Name for the new app"),
+    environment_vars: z.record(z.string(), z.string()).optional().describe("Values for the template's required and optional variables (see get-template)"),
+    copy: z.enum(["repo", "readonly", "local"]).optional(),
+    local_folder: z.string().optional().describe("With copy 'local': a new or empty folder to write the code into (default ./<slug>)"),
+    region: z.string().optional(),
+    folder_id: z.string().optional().describe("Folder (project) to put the app in"),
+  },
+  { title: "Deploy template", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  async ({ slug, organisation_id, name, environment_vars, copy, local_folder, region, folder_id }) => {
+    if (copy === "local") return downloadTemplate(slug, organisation_id, name, local_folder);
+    const started = await startTemplateDeploy(slug, { organisationId: organisation_id, name, copy, region, folderId: folder_id, environmentVars: environment_vars });
+    if (!started.success || !started.data) return text(formatError(started.error));
+    return followTemplateDeploy(organisation_id, started.data.templateDeployId, Date.now() + 50_000);
+  }
 );
 
 // -- databases ------------------------------------------------------------------
@@ -2476,7 +2636,7 @@ server.prompt(
             "",
             "1. `whoami`. If not signed in: `connect` with " + (email ? `the email ${email}` : "my email (ask me for it)") + ", show me the code and link, then `connect-status` until approved.",
             "2. `get-billing` for the workspace. On Free, continue. If a later step is refused with PLAN_ENTITLEMENT (not in the plan; the refusal names the plan that includes it) or POOL_EXHAUSTED (Free's included usage is used up), tell me that plan and its price and ask before upgrading. Then `choose-plan`; if it returns a Stripe link, give it to me and call `payment-method-status` until the plan has switched. Then retry the step.",
-            "3. `detect-local-framework` and `detect-local-git` in the project directory.",
+            "3. `detect-local-framework` and `detect-local-git` in the project directory. If there is no project there, or I asked for something new: `search-templates`, offer me two or three matches with their demo links, `get-template` for the one I pick, and ask what its customize hints and required variables need. To deploy it unchanged, `deploy-template` and go to step 7. Otherwise (templates without a database only) `deploy-template` with copy `local` into a new folder, make the edits, and use that folder from here on, passing `template_slug` and the required variables (`environment_vars`) to `upload-and-deploy`.",
             "4. Git-backed and pushed to GitHub: `get-github-installation-status`; if not installed, give me `get-github-install-url` and wait; then `create-application` from the repository. Otherwise `upload-and-deploy` (it packages the folder itself). Pass `password` to either when I asked for a protected site.",
             "5. If detection says the framework needs a database: `create-database` (shared-dev), poll `get-database` until ready, `get-database-connection-string`, and `set-environment-variables` with it under the variable name the framework expects.",
             "6. Any other variables the app needs: ask me, then `set-environment-variables`.",

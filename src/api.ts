@@ -183,6 +183,67 @@ export interface CreateDatabaseRequest {
   storageGb?: number;
 }
 
+/** search-templates filters; comma lists where the public API takes them. */
+export interface TemplateSearch {
+  query?: string;
+  category?: string;
+  runs?: string;
+  language?: string;
+  framework?: string;
+  price?: string;
+  page?: number;
+}
+
+/** The parts of the public template detail the tools read. */
+export interface TemplateDetail {
+  slug: string;
+  name: string;
+  runsAs: 'static' | 'server' | 'database';
+  creates: { app: 'static' | 'server'; database: { engine: string; tier: string; storageGb: number } | null };
+  planRequired: 'free' | 'paid';
+  variables: { name: string; kind: 'filled' | 'generated' | 'required' | 'optional'; hint: string | null; feature: string | null }[];
+  customize: Record<string, { ask: string; files: string[]; default?: string }> | null;
+}
+
+export interface TemplateDeployPlan {
+  template: TemplateDetail;
+  allowed: boolean;
+  blockers: { code: string; message: string; plan?: string }[];
+  owned: boolean;
+  copyOptions: { providers: ('github' | 'gitlab' | 'bitbucket')[]; readonly: boolean; download: boolean };
+  defaultName: string;
+}
+
+export interface TemplateDeployRequest {
+  organisationId: string;
+  name: string;
+  region?: string;
+  folderId?: string;
+  environmentVars?: Record<string, string>;
+  copy: 'repo' | 'readonly';
+  provider?: 'github' | 'gitlab' | 'bitbucket';
+  repoName?: string;
+  via: 'mcp';
+}
+
+export interface TemplateDeployStatus {
+  id: string;
+  status: 'queued' | 'creating_database' | 'creating_app' | 'deploying' | 'live' | 'failed';
+  applicationId: string | null;
+  environmentId: string | null;
+  url: string | null;
+  error: string | null;
+  template: { slug: string; name: string };
+}
+
+export interface TemplateDownload {
+  url: string;
+  tarballUrl: string;
+  ref: string;
+  rootDirectory: string | null;
+  filename: string;
+}
+
 const UPGRADE_STATUS_ROUTE = '/api/billing/upgrade/status';
 
 export class LightCloudApi {
@@ -737,6 +798,46 @@ export class LightCloudApi {
   // -- stacks --
   async createStack(organisationId: string, stackId: string, body: Record<string, unknown>): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/stacks/create', this.org(organisationId, { stackId, ...body }));
+  }
+
+  // -- templates (the gallery reads need no sign-in) --
+  async searchTemplates(search: TemplateSearch = {}): Promise<ApiResponse<unknown>> {
+    const params: Record<string, string | number | undefined> = {
+      q: search.query, category: search.category, runs: search.runs, lang: search.language,
+      fw: search.framework, price: search.price, page: search.page,
+    };
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value));
+    const qs = query.toString();
+    return this.client.get(`/api/public/templates${qs ? `?${qs}` : ''}`, { skipAuth: true });
+  }
+  async getTemplate(slug: string): Promise<ApiResponse<{ template: TemplateDetail; similar: unknown[] }>> {
+    return this.client.get(`/api/public/templates/${encodeURIComponent(slug)}`, { skipAuth: true });
+  }
+  async getTemplateDeployPlan(slug: string, organisationId: string): Promise<ApiResponse<TemplateDeployPlan>> {
+    return this.client.get(`/api/templates/${encodeURIComponent(slug)}/deploy-plan?${new URLSearchParams({ organisationId })}`);
+  }
+  async deployTemplate(slug: string, body: TemplateDeployRequest): Promise<ApiResponse<{ templateDeployId: string; applicationId: string | null }>> {
+    return this.client.post(`/api/templates/${encodeURIComponent(slug)}/deploy`, body);
+  }
+  async getTemplateDeploy(templateDeployId: string): Promise<ApiResponse<TemplateDeployStatus>> {
+    return this.client.get(`/api/templates/deploys/${encodeURIComponent(templateDeployId)}`);
+  }
+  async getTemplateDownload(slug: string, organisationId: string): Promise<ApiResponse<TemplateDownload>> {
+    return this.client.get(`/api/templates/${encodeURIComponent(slug)}/download?${new URLSearchParams({ organisationId })}`);
+  }
+  /**
+   * Poll a template deploy until it has an application, fails or goes live,
+   * or the deadline (ms since epoch) would pass; answers with the last read.
+   */
+  async waitForTemplateApplication(templateDeployId: string, deadline: number, intervalMs = 3000): Promise<ApiResponse<TemplateDeployStatus>> {
+    for (;;) {
+      const result = await this.getTemplateDeploy(templateDeployId);
+      const deploy = result.data;
+      if (!result.success || !deploy || deploy.applicationId || deploy.status === 'failed' || deploy.status === 'live') return result;
+      if (Date.now() + intervalMs > deadline) return result;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
   }
 
   // -- databases --

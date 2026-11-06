@@ -722,4 +722,93 @@ describe('LightCloudApi', () => {
       expect(result.error?.code).toBe('PAYMENT_FAILED');
     });
   });
+
+  // ============ Templates ============
+
+  describe('templates', () => {
+    it('searches the public gallery with the API parameter names, without sign-in', async () => {
+      mockClient.get.mockResolvedValue(createSuccessResponse({ items: [], total: 0 }));
+
+      await api.searchTemplates({ query: 'bakery site', runs: 'static,server', language: 'Python', framework: 'nextjs', category: '', page: 2 });
+
+      expect(mockClient.get).toHaveBeenCalledWith('/api/public/templates?q=bakery+site&runs=static%2Cserver&lang=Python&fw=nextjs&page=2', { skipAuth: true });
+    });
+
+    it('lists everything when no filter is given', async () => {
+      mockClient.get.mockResolvedValue(createSuccessResponse({ items: [], total: 0 }));
+
+      await api.searchTemplates();
+
+      expect(mockClient.get).toHaveBeenCalledWith('/api/public/templates', { skipAuth: true });
+    });
+
+    it('reads one template publicly, and the plan, download and deploy status signed in', async () => {
+      mockClient.get.mockResolvedValue(createSuccessResponse({}));
+
+      await api.getTemplate('folio');
+      await api.getTemplateDeployPlan('folio', 'org-123');
+      await api.getTemplateDownload('folio', 'org-123');
+      await api.getTemplateDeploy('td-1');
+
+      expect(mockClient.get.mock.calls).toEqual([
+        ['/api/public/templates/folio', { skipAuth: true }],
+        ['/api/templates/folio/deploy-plan?organisationId=org-123'],
+        ['/api/templates/folio/download?organisationId=org-123'],
+        ['/api/templates/deploys/td-1'],
+      ]);
+    });
+
+    it('starts a deploy with the body the console takes', async () => {
+      mockClient.post.mockResolvedValue(createSuccessResponse({ templateDeployId: 'td-1', applicationId: null }));
+      const body = { organisationId: 'org-123', name: 'my-site', copy: 'readonly' as const, via: 'mcp' as const };
+
+      await api.deployTemplate('folio', body);
+
+      expect(mockClient.post).toHaveBeenCalledWith('/api/templates/folio/deploy', body);
+    });
+
+    describe('waitForTemplateApplication', () => {
+      const deploy = (status: string, applicationId: string | null = null) =>
+        createSuccessResponse({ id: 'td-1', status, applicationId, environmentId: null, url: null, error: null, template: { slug: 'folio', name: 'Folio' } });
+
+      it('polls until the deploy has an application', async () => {
+        mockClient.get
+          .mockResolvedValueOnce(deploy('queued'))
+          .mockResolvedValueOnce(deploy('creating_database'))
+          .mockResolvedValueOnce(deploy('creating_app', 'app-1'));
+
+        const result = await api.waitForTemplateApplication('td-1', Date.now() + 60_000, 0);
+
+        expect(mockClient.get).toHaveBeenCalledTimes(3);
+        expect(result.data?.applicationId).toBe('app-1');
+      });
+
+      it('stops at a failure', async () => {
+        mockClient.get.mockResolvedValueOnce(deploy('queued')).mockResolvedValueOnce(deploy('failed'));
+
+        const result = await api.waitForTemplateApplication('td-1', Date.now() + 60_000, 0);
+
+        expect(mockClient.get).toHaveBeenCalledTimes(2);
+        expect(result.data?.status).toBe('failed');
+      });
+
+      it('answers with the last status once the deadline would pass', async () => {
+        mockClient.get.mockResolvedValue(deploy('creating_database'));
+
+        const result = await api.waitForTemplateApplication('td-1', Date.now() + 1_000, 5_000);
+
+        expect(mockClient.get).toHaveBeenCalledTimes(1);
+        expect(result.data?.status).toBe('creating_database');
+      });
+
+      it('passes an API error straight back', async () => {
+        mockClient.get.mockResolvedValue(createErrorResponse('NOT_FOUND', 'No such deploy'));
+
+        const result = await api.waitForTemplateApplication('td-1', Date.now() + 60_000, 0);
+
+        expect(mockClient.get).toHaveBeenCalledTimes(1);
+        expect(result.error?.code).toBe('NOT_FOUND');
+      });
+    });
+  });
 });
