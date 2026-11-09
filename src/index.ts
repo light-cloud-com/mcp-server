@@ -2142,7 +2142,7 @@ server.tool(
   "Search the template gallery: ready-made websites, apps and starters that deploy in one step (no sign-in needed). Offer the user two or three matches with their demo links, then call get-template for the one they pick.",
   {
     query: z.string().optional().describe("Words to match, e.g. bakery, portfolio, blog"),
-    category: z.string().optional().describe("A kind (websites, apps, starters) or a category: landing, portfolio, blog, docs, personal, business, erp, manufacturing, field-service, planning, demand-planning, crm, sales, purchasing, approvals, subscriptions, projects, timesheets, hr, documents, helpdesk, dashboards, workflows, ai, portals, reports, cms, productivity, tools, frontend, fullstack, backend"),
+    category: z.string().optional().describe("A kind (websites, apps, starters) or a category: landing, portfolio, blog, docs, personal, business, erp, manufacturing, field-service, planning, demand-planning, booking, crm, sales, purchasing, approvals, subscriptions, projects, timesheets, hr, documents, helpdesk, dashboards, workflows, ai, portals, job-boards, reports, cms, productivity, tools, frontend, fullstack, backend"),
     runs: z.string().optional().describe("Comma list of static, server, database (database needs a paid plan)"),
     language: z.string().optional().describe("Comma list of languages, e.g. JavaScript,Python"),
     framework: z.string().optional().describe("Comma list of framework ids, e.g. nextjs,astro"),
