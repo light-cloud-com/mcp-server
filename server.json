@@ -6,15 +6,21 @@
     "url": "https://github.com/light-cloud-com/mcp-server",
     "source": "github"
   },
-  "version": "1.6.2",
+  "version": "1.7.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@light-cloud/mcp-server",
-      "version": "1.6.2",
+      "version": "1.7.0",
       "transport": {
         "type": "stdio"
       }
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.light-cloud.com/mcp"
     }
   ]
 }

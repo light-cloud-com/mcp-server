@@ -78,6 +78,10 @@ export const LOCAL_ONLY_TOOLS = new Set([
 // the person's own machine, left out of the remote server so no secret passes through a hosted app.
 export const CREDENTIAL_TOOLS = new Set(["get-database-connection-string", "create-api-key"]);
 
+// Tools a deploy leaves out of the remote server, comma-separated in MCP_HIDDEN_TOOLS: production sets
+// the template tools while the gallery is off there, so a directory review never meets a failing tool.
+export const HIDDEN_TOOLS = new Set((process.env.MCP_HIDDEN_TOOLS ?? "").split(",").map((t) => t.trim()).filter(Boolean));
+
 // The ChatGPT directory's set (docs/todo/AI_APPS_TODO.md §2): templates and the status of your
 // sites; no billing, nothing that takes or returns keys or passwords. Site-editing tools join it later.
 export const CHATGPT_TOOLS = new Set([
@@ -97,6 +101,7 @@ export const CHATGPT_TOOLS = new Set([
   "list-applications",
   "get-application-status",
   "get-deployment",
+  "get-build-logs",
   "wait-for-deployment",
   // organising the dashboard: the folder tree, and what sits in it
   "get-workspace-overview",
@@ -137,7 +142,9 @@ const remoteGuide = (audience: "claude" | "chatgpt") => {
     "",
     "OTHER WAYS TO DEPLOY",
     "- A repository the user already has: `create-application`.",
-    "- A ready-made site or app: `search-templates`, offer two or three, `get-template` for the one they pick, `deploy-template`, `wait-for-deployment`.",
+    ...(HIDDEN_TOOLS.has("search-templates")
+      ? []
+      : ["- A ready-made site or app: `search-templates`, offer two or three, `get-template` for the one they pick, `deploy-template`, `wait-for-deployment`."]),
     ...(claude
       ? ["- A zip in your sandbox: `request-upload-url`, PUT the zip to its `uploadUrl`, `complete-upload`, `create-application-from-upload`. If your sandbox blocks that domain, tell the user which domain to allow in their settings."]
       : []),
@@ -188,7 +195,7 @@ if (remote || only) {
   // registering a local-only tool (or one outside `only`) is a no-op here
   const register = server.tool.bind(server) as (...args: unknown[]) => unknown;
   (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (name: unknown, ...rest: unknown[]) =>
-    (remote && (LOCAL_ONLY_TOOLS.has(String(name)) || CREDENTIAL_TOOLS.has(String(name)))) || (only && !only.has(String(name)))
+    (remote && (LOCAL_ONLY_TOOLS.has(String(name)) || CREDENTIAL_TOOLS.has(String(name)) || HIDDEN_TOOLS.has(String(name)))) || (only && !only.has(String(name)))
       ? undefined
       : register(name, ...rest);
   if (only) {

@@ -3,6 +3,7 @@
 //   POST /mcp                                  MCP requests; Authorization: Bearer <access token>
 //   GET  /.well-known/oauth-protected-resource where to get a token (RFC 9728)
 //   GET  /health
+//   GET  /.well-known/openai-apps-challenge   OpenAI's domain check (OPENAI_APPS_CHALLENGE)
 //
 // Stateless: every request builds its own server (buildServer({ remote: true })) and runs
 // inside requestCredentials with its own token, so requests never share a session. Tokens are
@@ -118,6 +119,12 @@ app.get('/.well-known/oauth-protected-resource/mcp', resourceMetadata('mcp'));
 app.get('/.well-known/oauth-protected-resource/chatgpt', resourceMetadata('chatgpt'));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+// OpenAI's domain check for the ChatGPT plugin directory: the portal's token, as plain text, from the deploy's env
+app.get('/.well-known/openai-apps-challenge', (_req, res) => {
+  const token = process.env.OPENAI_APPS_CHALLENGE;
+  if (!token) return void res.status(404).end();
+  res.type('text/plain').send(token);
+});
 
 const handle = (name: ServerName) => async (req: Request, res: Response) => {
   if (!originAllowed(req.get('origin'))) return res.status(403).json({ error: 'forbidden_origin' });
