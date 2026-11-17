@@ -123,7 +123,7 @@ const remoteGuide = (audience: "claude" | "chatgpt") => {
   const claude = audience === "claude";
   const fromLocal = (heading: string) => SERVER_INSTRUCTIONS.split("\n").filter((l) => l.startsWith(heading));
   return [
-    "Light Cloud hosts websites, web apps, APIs and databases. You are connected as the Light Cloud account that approved this app, and act for that person. Talk in plain, friendly words: no ids, no infrastructure jargon, no raw JSON.",
+    "Light Cloud hosts websites, web apps, APIs and databases. These tools act on the Light Cloud account that approved this connection, with that person's permissions. Ids in tool results are for later tool calls; the user refers to apps, folders and workspaces by name.",
     "",
     "START OF EVERY TASK",
     "1. `whoami`: the user's workspaces; their ids are the organisation_id every other tool takes. One workspace: use it without asking. Several: ask which one, by name. Never ask the user for an id.",
@@ -153,7 +153,7 @@ const remoteGuide = (audience: "claude" | "chatgpt") => {
     "Folders group apps and databases. Look first (`get-workspace-overview`), propose the new layout in a short list, and change it only after the user agrees: `create-folder`, `rename-folder`, `move-folder`, `move-application`, `move-database`, `rename-application`. `delete-folder` removes empty folders only.",
     "",
     "ACCOUNTS",
-    "No tool creates or switches accounts. To use another Light Cloud account, or to create one, the user disconnects this app and connects it again: the sign-in page that opens creates an account on the spot (Continue with Google or GitHub, Free plan, no card) with a free workspace. A GitHub login belongs to one Light Cloud account at a time; linking it to this one moves it, and the user should know that before they approve.",
+    "No tool creates or switches accounts. To use another Light Cloud account, or to create one, the user disconnects this app and connects it again: the sign-in page that opens can also create a new account and workspace. A GitHub login belongs to one Light Cloud account at a time; linking it to this one moves it, and the user should know that before they approve.",
     "",
     "WHEN A TOOL REFUSES",
     "Its message says what to do. `Next step: call X` means call X and retry. Otherwise ask the user what the message says to ask, in plain words, with any link it gives, and continue once they answer. Never guess an account, workspace, repository or id. AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED: the user turned this off under Settings → Security → Agents & CLI; tell them, do not retry or look for another route.",
@@ -167,7 +167,7 @@ const remoteGuide = (audience: "claude" | "chatgpt") => {
           "",
           "ALSO HERE: app and environment settings, environment variables, custom domains, scaling, logs and metrics, visitor passwords, database admin (schema, read-only `query-database`, `execute-database-sql` for changes), invoices and usage alerts, workspaces and members, notifications, support.",
         ]
-      : ["PLANS", "When a tool says a paid plan is needed, link the user to https://www.light-cloud.com/pricing. Never start an upgrade or a payment here."]),
+      : ["PLANS", "Plans and payments are not handled by these tools. When a tool says an action needs a different plan, tell the user it can be changed in the Light Cloud console."]),
     "",
     "HAND-OVER",
     "Finish with what the user can use: the live URL (and the visitor password, if one was set), and the repository link when you created one.",
