@@ -3,6 +3,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/**
+ * The remote server (src/http.ts) runs each request inside this, with the
+ * bearer token the request came with: credentials then come from the request,
+ * never the file, and nothing is written (the OAuth client refreshes its own).
+ */
+export const requestCredentials = new AsyncLocalStorage<{ accessToken: string }>();
 
 export interface StoredCredentials {
   accessToken: string;
@@ -20,6 +28,8 @@ function ensureConfigDir(): void {
 }
 
 export function getStoredCredentials(): StoredCredentials | null {
+  const remote = requestCredentials.getStore();
+  if (remote) return { accessToken: remote.accessToken };
   try {
     if (!fs.existsSync(CREDENTIALS_FILE)) {
       return null;
@@ -32,6 +42,7 @@ export function getStoredCredentials(): StoredCredentials | null {
 }
 
 export function storeCredentials(credentials: StoredCredentials): void {
+  if (requestCredentials.getStore()) return;
   ensureConfigDir();
   fs.writeFileSync(
     CREDENTIALS_FILE,
@@ -41,6 +52,7 @@ export function storeCredentials(credentials: StoredCredentials): void {
 }
 
 export function clearCredentials(): void {
+  if (requestCredentials.getStore()) return;
   try {
     if (fs.existsSync(CREDENTIALS_FILE)) {
       fs.unlinkSync(CREDENTIALS_FILE);

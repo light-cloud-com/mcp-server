@@ -57,14 +57,145 @@ const SERVER_INSTRUCTIONS = [
   "SCOPE: everything the console does is here — app and environment settings, folders, stacks, database admin (schema, SQL, dump, import, metrics), invoices and usage alerts, workspaces and members, API keys (paid plans), git provider links, notifications, support. Console-only by design: the account password, two-factor, and the Agents & CLI switch. A refusal with code AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED means the user turned that off under Settings → Security → Agents & CLI: tell them, do not retry, do not look for another route.",
 ].join("\n");
 
+// Tools that work on the machine the server runs on (its folders, its browser, its
+// credentials file): the remote server (src/http.ts) has none of these to offer.
+export const LOCAL_ONLY_TOOLS = new Set([
+  "login",
+  "logout",
+  "connect",
+  "connect-status",
+  "detect-local-framework",
+  "detect-local-git",
+  "package-source",
+  "upload-and-deploy",
+  "read-project-config",
+  "write-project-config",
+  "dump-database",
+  "import-database",
+]);
+
+// Tools that hand back a credential (a connection string with its password, a new API key): fine on
+// the person's own machine, left out of the remote server so no secret passes through a hosted app.
+export const CREDENTIAL_TOOLS = new Set(["get-database-connection-string", "create-api-key"]);
+
+// The ChatGPT directory's set (docs/todo/AI_APPS_TODO.md §2): templates and the status of your
+// sites; no billing, nothing that takes or returns keys or passwords. Site-editing tools join it later.
+export const CHATGPT_TOOLS = new Set([
+  // the user's workspaces and their ids: every other tool takes organisation_id
+  "whoami",
+  // links the user opens to connect GitHub, GitLab or Bitbucket when create-repository finds none
+  "get-github-install-url",
+  "connect-git-provider",
+  "connect-github-account",
+  "get-git-connections",
+  "create-repository",
+  "commit-files",
+  "create-application",
+  "search-templates",
+  "get-template",
+  "deploy-template",
+  "list-applications",
+  "get-application-status",
+  "get-deployment",
+  "wait-for-deployment",
+  // organising the dashboard: the folder tree, and what sits in it
+  "get-workspace-overview",
+  "list-folders",
+  "create-folder",
+  "rename-folder",
+  "move-folder",
+  "delete-folder",
+  "move-application",
+  "rename-application",
+  "list-databases",
+  "move-database",
+  "delete-application",
+]);
+
+// The guide remote assistants (Claude, ChatGPT) get with every connection. One text, two audiences:
+// ChatGPT's directory set has no billing and no zip upload, Claude's has both.
+const remoteGuide = (audience: "claude" | "chatgpt") => {
+  const claude = audience === "claude";
+  const fromLocal = (heading: string) => SERVER_INSTRUCTIONS.split("\n").filter((l) => l.startsWith(heading));
+  return [
+    "Light Cloud hosts websites, web apps, APIs and databases. You are connected as the Light Cloud account that approved this app, and act for that person. Talk in plain, friendly words: no ids, no infrastructure jargon, no raw JSON.",
+    "",
+    "START OF EVERY TASK",
+    "1. `whoami`: the user's workspaces; their ids are the organisation_id every other tool takes. One workspace: use it without asking. Several: ask which one, by name. Never ask the user for an id.",
+    "2. `get-workspace-overview`: the folder tree with every app (deployment status, live URL, custom domain, framework, repository, branch, environments) and database, plus the connected GitHub, GitLab and Bitbucket accounts. Answer from it; never ask the user what they have or where it is.",
+    "",
+    "STATUS",
+    "When the user asks for status, or how their sites are doing: call `get-workspace-overview` and answer with (1) the signed-in account and current workspace, (2) the folder tree with each app's status and live URL, (3) the databases, (4) the connected git accounts. Put anything failing, stopped or still building first, with what to do about it (`get-deployment` and `get-build-logs` explain a failed build).",
+    "",
+    "BUILD AND DEPLOY A SITE YOU WRITE",
+    "1. `get-git-connections`: is a GitHub, GitLab or Bitbucket account ready?",
+    "2. `create-repository` with the files, in that account. Private unless the user asked for a public repository.",
+    "3. `create-application` with the repository URL, branch main, auto_deploy_on_push true (framework html for plain pages).",
+    "4. `wait-for-deployment`, then hand over the live URL.",
+    "Changes later: `commit-files` on the same repository; the push redeploys it; confirm with `wait-for-deployment`.",
+    "Nothing ready in step 1: the tool says exactly what the user must do (link their GitHub login in the console, `connect-github-account`, `get-github-install-url` with organisation_id, or `connect-git-provider`). Pass that on in plain words with the link, wait until they say it is done, check again, then carry on where you stopped.",
+    "",
+    "OTHER WAYS TO DEPLOY",
+    "- A repository the user already has: `create-application`.",
+    "- A ready-made site or app: `search-templates`, offer two or three, `get-template` for the one they pick, `deploy-template`, `wait-for-deployment`.",
+    ...(claude
+      ? ["- A zip in your sandbox: `request-upload-url`, PUT the zip to its `uploadUrl`, `complete-upload`, `create-application-from-upload`. If your sandbox blocks that domain, tell the user which domain to allow in their settings."]
+      : []),
+    "",
+    "ORGANISE THE DASHBOARD",
+    "Folders group apps and databases. Look first (`get-workspace-overview`), propose the new layout in a short list, and change it only after the user agrees: `create-folder`, `rename-folder`, `move-folder`, `move-application`, `move-database`, `rename-application`. `delete-folder` removes empty folders only.",
+    "",
+    "ACCOUNTS",
+    "No tool creates or switches accounts. To use another Light Cloud account, or to create one, the user disconnects this app and connects it again: the sign-in page that opens creates an account on the spot (Continue with Google or GitHub, Free plan, no card) with a free workspace. A GitHub login belongs to one Light Cloud account at a time; linking it to this one moves it, and the user should know that before they approve.",
+    "",
+    "WHEN A TOOL REFUSES",
+    "Its message says what to do. `Next step: call X` means call X and retry. Otherwise ask the user what the message says to ask, in plain words, with any link it gives, and continue once they answer. Never guess an account, workspace, repository or id. AGENT_ACCESS_DISABLED or AGENT_ACTION_BLOCKED: the user turned this off under Settings → Security → Agents & CLI; tell them, do not retry or look for another route.",
+    "",
+    "SAFETY",
+    "Before deleting anything (an app, a folder, files in a repository) or overwriting the user's work, name exactly what goes and get a clear yes. Never put passwords, tokens or keys in files, commits or replies. The account password, two-factor and the Agents & CLI switch are changed in the console only.",
+    "",
+    ...(claude
+      ? [
+          ...fromLocal("BILLING:"),
+          "",
+          "ALSO HERE: app and environment settings, environment variables, custom domains, scaling, logs and metrics, visitor passwords, database admin (schema, read-only `query-database`, `execute-database-sql` for changes), invoices and usage alerts, workspaces and members, notifications, support.",
+        ]
+      : ["PLANS", "When a tool says a paid plan is needed, link the user to https://www.light-cloud.com/pricing. Never start an upgrade or a payment here."]),
+    "",
+    "HAND-OVER",
+    "Finish with what the user can use: the live URL (and the visitor password, if one was set), and the repository link when you created one.",
+  ].join("\n");
+};
+
+const CHATGPT_INSTRUCTIONS = remoteGuide("chatgpt");
+const REMOTE_INSTRUCTIONS = remoteGuide("claude");
+
+/**
+ * The server with every tool. `remote` leaves out LOCAL_ONLY_TOOLS and tells the
+ * assistant so; the stdio entry (main, below) builds the full one, the remote
+ * entry one per request. (The body below is the old module scope, kept as it was.)
+ */
+export function buildServer({ remote = false, only }: { remote?: boolean; only?: Set<string> } = {}): McpServer {
 const server = new McpServer(
   {
     name: "light-cloud",
     // From package.json, so the version a client sees matches the one on npm.
     version: (createRequire(import.meta.url)("../package.json") as { version: string }).version,
   },
-  { instructions: SERVER_INSTRUCTIONS }
+  { instructions: only === CHATGPT_TOOLS ? CHATGPT_INSTRUCTIONS : remote ? REMOTE_INSTRUCTIONS : SERVER_INSTRUCTIONS }
 );
+if (remote || only) {
+  // registering a local-only tool (or one outside `only`) is a no-op here
+  const register = server.tool.bind(server) as (...args: unknown[]) => unknown;
+  (server as unknown as { tool: (...args: unknown[]) => unknown }).tool = (name: unknown, ...rest: unknown[]) =>
+    (remote && (LOCAL_ONLY_TOOLS.has(String(name)) || CREDENTIAL_TOOLS.has(String(name)))) || (only && !only.has(String(name)))
+      ? undefined
+      : register(name, ...rest);
+  if (only) {
+    // prompts walk through tools a reduced set may not have
+    (server as unknown as { prompt: (...args: unknown[]) => unknown }).prompt = () => undefined;
+  }
+}
 
 // Initialize API client and API wrapper
 let apiClient: ApiClient;
@@ -228,6 +359,11 @@ const ANNOTATIONS: Record<string, { title: string; readOnlyHint: boolean; destru
   "list-repositories": { title: "List repositories", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "list-branches": { title: "List branches", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   "check-repo-access": { title: "Check repo access", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "connect-github-account": { title: "Connect GitHub account", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-workspace-overview": { title: "Workspace overview", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "get-git-connections": { title: "Git connections", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  "create-repository": { title: "Create repository with files", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  "commit-files": { title: "Commit files to repository", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   "request-upload-url": { title: "Request upload URL", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   "complete-upload": { title: "Complete upload", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   "get-platform-config": { title: "Get platform config", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -785,11 +921,11 @@ server.tool(
 
 server.tool(
   "get-github-install-url",
-  "Get the URL to install the Light Cloud GitHub App",
-  {},
+  "A link that installs the Light Cloud GitHub App and connects it to a workspace. Always pass organisation_id: without it the installation is not linked to any workspace. Give the link to the user; when they are back, check with get-git-connections.",
+  { organisation_id: z.string().optional().describe("The workspace to connect GitHub to (needed for it to count)") },
   ANNOTATIONS["get-github-install-url"],
-  async () => {
-    const result = await getApi().getGitHubInstallUrl();
+  async ({ organisation_id }) => {
+    const result = await getApi().getGitHubInstallUrl(organisation_id);
     return formatResponse(result);
   }
 );
@@ -862,11 +998,154 @@ server.tool(
   }
 );
 
+// ============ Repository Tools ============
+// Code the assistant wrote goes into the user's own repository (their connected GitHub, GitLab or
+// Bitbucket account), and Light Cloud deploys from there: no upload from the assistant's sandbox.
+
+const repoFile = z.object({
+  path: z.string().describe("Path inside the repository, e.g. 'index.html' or 'src/app.js'"),
+  content: z.string().describe("The file's content: text, or base64 with encoding 'base64'"),
+  encoding: z.enum(["utf8", "base64"]).optional().describe("'base64' for binary files such as images; default utf8"),
+});
+
+server.tool(
+  "connect-github-account",
+  "A link that links the user's GitHub login to this Light Cloud account, which creating repositories in a personal GitHub account needs (get-git-connections says when). The user opens it and approves on GitHub. If that GitHub login belongs to another Light Cloud account, approving moves it here and the other account loses its GitHub sign-in: say so before giving the link. Then check get-git-connections.",
+  {},
+  ANNOTATIONS["connect-github-account"],
+  async () => {
+    const result = await getApi().getGitHubConnectUrl(true);
+    if (!result.success || !result.data) return formatResponse(result);
+    return text(`Open this link and approve on GitHub. If this GitHub login is linked to another Light Cloud account, it moves to this one.\n${result.data.url}`);
+  }
+);
+
+// One call that shows the assistant the whole workspace: the folder tree with the apps and
+// databases in each folder, each app's live URL, source and state, and the git connections.
+server.tool(
+  "get-workspace-overview",
+  "Status of a workspace at a glance: who is signed in, the current workspace (and the user's others), the folder tree with the apps and databases in each folder (or at the root), each app's deployment status, live URL, custom domain, framework, repository, branch and environments, each database's state, and which GitHub, GitLab or Bitbucket accounts are connected. Call it whenever the user asks for status or about their sites, wants to organise the dashboard, or before deploying, instead of guessing.",
+  { organisation_id: z.string().describe("The organization (workspace) ID") },
+  ANNOTATIONS["get-workspace-overview"],
+  async ({ organisation_id }) => {
+    const api = getApi();
+    const [profile, folders, apps, dbs, git] = await Promise.all([
+      api.getProfile(),
+      api.listProjects(organisation_id),
+      api.listApplications(organisation_id),
+      api.listDatabases(organisation_id),
+      api.getGitConnections(organisation_id),
+    ]);
+    type Row = Record<string, any>;
+    const items = (r: { data?: unknown }): Row[] => {
+      const d = r.data as any;
+      return Array.isArray(d) ? d : Array.isArray(d?.items) ? d.items : [];
+    };
+    const app = (a: Row) => {
+      const prod = (a.environments ?? []).find((e: Row) => e.is_production) ?? a.environments?.[0];
+      return {
+        id: a.id,
+        name: a.name,
+        status: prod?.status ?? a.status,
+        url: prod?.custom_domain && prod?.custom_domain_status === "active" ? `https://${prod.custom_domain}` : prod?.deployed_url ?? null,
+        type: a.deployment_type,
+        framework: a.framework,
+        source: a.github_repo_owner && a.github_repo_name ? `${a.git_provider ?? "github"}:${a.github_repo_owner}/${a.github_repo_name}` : "upload",
+        branch: a.github_branch ?? null,
+        customDomain: prod?.custom_domain ? { domain: prod.custom_domain, status: prod.custom_domain_status } : null,
+        lastChanged: prod?.updated_at ?? a.updated_at ?? null,
+        environments: (a.environments ?? []).map((e: Row) => ({ id: e.id, name: e.name, production: !!e.is_production, status: e.status, url: e.deployed_url ?? null })),
+      };
+    };
+    const db = (d: Row) => ({ id: d.id, name: d.name, type: d.database_type, tier: d.tier, status: d.status });
+    const nodes = new Map<string, Row>();
+    for (const f of items(folders)) nodes.set(f.id, { id: f.id, name: f.name, folders: [], applications: [], databases: [] });
+    const root: Row = { folders: [], applications: [], databases: [] };
+    const home = (id?: string | null) => (id && nodes.get(id)) || root;
+    for (const f of items(folders)) home(f.parent_id).folders.push(nodes.get(f.id));
+    for (const a of items(apps)) home(a.project_id).applications.push(app(a));
+    for (const d of items(dbs)) home(d.project_id).databases.push(db(d));
+    // a refusal (Agents & CLI off, an action blocked, no access) says why: pass it on, not "could not read"
+    const refused = [folders, apps, dbs].find((r) => !r.success);
+    if (refused && [folders, apps, dbs].every((r) => !r.success)) return formatResponse(refused);
+    const me = profile.success ? (profile.data as Row) : null;
+    const workspaces: Row[] = me?.organisations ?? [];
+    const current = workspaces.find((o) => o.id === organisation_id);
+    const appRows = items(apps);
+    const byStatus = appRows.reduce((acc: Record<string, number>, a) => {
+      const st = String(app(a).status ?? "unknown");
+      acc[st] = (acc[st] ?? 0) + 1;
+      return acc;
+    }, {});
+    const failed = (
+      [["folders", folders], ["applications", apps], ["databases", dbs]] as Array<[string, { success: boolean; error?: { message?: string } }]>
+    )
+      .filter(([, r]) => !r.success)
+      .map(([n, r]) => `${n}${r.error?.message ? ` (${r.error.message})` : ""}`);
+    return text(
+      JSON.stringify(
+        {
+          signedInAs: me?.email ?? null,
+          workspace: current ? { id: current.id, name: current.name, role: current.role } : { id: organisation_id },
+          otherWorkspaces: workspaces.filter((o) => o.id !== organisation_id).map((o) => ({ id: o.id, name: o.name, role: o.role })),
+          counts: { folders: nodes.size, applications: appRows.length, databases: items(dbs).length, applicationsByStatus: byStatus },
+          tree: root,
+          git: git.success ? git.data : null,
+          ...(failed.length ? { incomplete: `Could not read: ${failed.join(", ")}` } : {}),
+        },
+        null,
+        2
+      )
+    );
+  }
+);
+
+server.tool(
+  "get-git-connections",
+  "Which GitHub, GitLab and Bitbucket accounts this workspace can create repositories in and deploy from, whether each is ready, and what to ask the user if none is. Call it before create-repository when unsure, and again after the user says they connected an account.",
+  { organisation_id: z.string().describe("The organization (workspace) ID") },
+  ANNOTATIONS["get-git-connections"],
+  async ({ organisation_id }) => formatResponse(await getApi().getGitConnections(organisation_id))
+);
+
+server.tool(
+  "create-repository",
+  "Create a new repository in the user's connected GitHub, GitLab or Bitbucket account with these files as its first commit. Use it to deploy code you wrote in the conversation: then call create-application with the returned htmlUrl (branch main, auto_deploy_on_push true), and later changes go through commit-files. Private unless private is false. Up to 1000 files and 10 MB per call. If no git account is connected, the error says so: offer connect-git-provider.",
+  {
+    organisation_id: z.string().describe("The organization (workspace) ID"),
+    name: z.string().min(1).max(100).describe("Repository name, e.g. 'bakery-site'"),
+    files: z.array(repoFile).min(1).max(1000),
+    provider: z.enum(["github", "gitlab", "bitbucket"]).optional().describe("Which connected account; default the first connected (GitHub first)"),
+    private: z.boolean().optional().describe("Default true (private). Set false only when the user asked for a public repository"),
+    message: z.string().max(2000).optional().describe("Commit message"),
+  },
+  ANNOTATIONS["create-repository"],
+  async ({ organisation_id, name, files, provider, private: isPrivate, message }) =>
+    formatResponse(await getApi().createRepository({ organisationId: organisation_id, name, files, provider, private: isPrivate, message }))
+);
+
+server.tool(
+  "commit-files",
+  "Commit changed, new or deleted files ({ path, delete: true }) to a repository the workspace's git connection reaches, as one commit on a branch (default: the repository's default branch). An application deploying that branch with auto-deploy redeploys on its own; otherwise call deploy-application. Overwrites the files given; confirm with the user before deleting files.",
+  {
+    organisation_id: z.string().describe("The organization (workspace) ID"),
+    provider: z.enum(["github", "gitlab", "bitbucket"]),
+    owner: z.string().describe("Account, organisation, group or workspace that owns the repository"),
+    repo: z.string().describe("Repository name"),
+    branch: z.string().optional(),
+    files: z.array(repoFile.partial({ content: true }).extend({ delete: z.boolean().optional().describe("true to delete this path") })).min(1).max(1000),
+    message: z.string().max(2000).optional().describe("Commit message"),
+  },
+  ANNOTATIONS["commit-files"],
+  async ({ organisation_id, provider, owner, repo, branch, files, message }) =>
+    formatResponse(await getApi().commitFiles({ organisationId: organisation_id, provider, owner, repo, branch, files, message }))
+);
+
 // ============ Upload Tools ============
 
 server.tool(
   "request-upload-url",
-  "Request a signed URL to upload source code",
+  "Request an upload for a zip of the source. Returns uploadId, uploadUrl (on Light Cloud's own API domain, PUT the zip with Content-Type application/zip, up to 32 MB) and signedUrl (Google Cloud Storage, larger files). From a sandbox that only reaches allowed domains, use uploadUrl; if it is blocked, ask the user to allow that domain in their assistant's settings. Then complete-upload and create-application-from-upload.",
   {
     organisation_id: z.string().describe("The organization ID"),
     file_name: z.string().optional().describe("Name of the file being uploaded"),
@@ -2106,6 +2385,30 @@ server.tool(
 );
 
 server.tool(
+  "rename-folder",
+  "Rename a folder (project).",
+  { organisation_id: orgArg, folder_id: z.string(), name: z.string().min(1) },
+  { title: "Rename folder", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  async ({ organisation_id, folder_id, name }) => formatResponse(await getApi().renameProject(organisation_id, folder_id, name))
+);
+
+server.tool(
+  "move-folder",
+  "Move a folder (project), with everything in it, into another folder, or to the workspace root.",
+  { organisation_id: orgArg, folder_id: z.string(), target_folder_id: z.string().optional().describe("Folder to move it into; omit for the root") },
+  { title: "Move folder", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  async ({ organisation_id, folder_id, target_folder_id }) => formatResponse(await getApi().moveProject(organisation_id, folder_id, target_folder_id ?? null))
+);
+
+server.tool(
+  "move-database",
+  "Move a database into a folder (project), or to the workspace root. Its connection details do not change.",
+  { organisation_id: orgArg, database_id: z.string(), folder_id: z.string().optional().describe("Target folder id; omit for the root") },
+  { title: "Move database", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  async ({ organisation_id, database_id, folder_id }) => formatResponse(await getApi().moveDatabase(organisation_id, database_id, folder_id ?? null))
+);
+
+server.tool(
   "delete-folder",
   "Delete an empty folder (project).",
   { organisation_id: orgArg, folder_id: z.string() },
@@ -2142,7 +2445,7 @@ server.tool(
   "Search the template gallery: ready-made websites, apps and starters that deploy in one step (no sign-in needed). Offer the user two or three matches with their demo links, then call get-template for the one they pick.",
   {
     query: z.string().optional().describe("Words to match, e.g. bakery, portfolio, blog"),
-    category: z.string().optional().describe("A kind (websites, apps, starters) or a category; a template can be in several categories and matches any of them: landing, portfolio, blog, docs, personal, business, erp, manufacturing, field-service, planning, demand-planning, booking, crm, sales, purchasing, approvals, subscriptions, projects, timesheets, hr, documents, helpdesk, dashboards, workflows, ai, portals, job-boards, reports, cms, productivity, tools, frontend, fullstack, backend"),
+    category: z.string().optional().describe("A kind (websites, apps, starters), or a category or group id from facets.categories in a search result (the gallery adds categories, so take ids from there); a template can be in several categories and matches any of them"),
     runs: z.string().optional().describe("Comma list of static, server, database (database needs a paid plan)"),
     language: z.string().optional().describe("Comma list of languages, e.g. JavaScript,Python"),
     framework: z.string().optional().describe("Comma list of framework ids, e.g. nextjs,astro"),
@@ -2252,12 +2555,21 @@ server.tool(
   async ({ organisation_id, database_id }) => formatResponse(await getApi().getDatabaseSchema(organisation_id, database_id))
 );
 
+// Reading and writing are separate tools (Claude's directory review rejects one tool that does both).
 server.tool(
   "query-database",
-  "Run SQL against a database. Read-only unless allow_writes is true; results are capped by the platform. Never print secrets from the results into files.",
-  { organisation_id: orgArg, database_id: z.string(), sql: z.string().min(1), allow_writes: z.boolean().optional() },
-  { title: "Query database", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  async ({ organisation_id, database_id, sql, allow_writes }) => formatResponse(await getApi().queryDatabase(organisation_id, database_id, sql, allow_writes === true))
+  "Run a read-only SQL query (PostgreSQL) against a Light Cloud database: SELECT, EXPLAIN and the like. Statements that change data or the schema are refused; use execute-database-sql for those. Results are capped by the platform. Never print secrets from the results into files.",
+  { organisation_id: orgArg, database_id: z.string(), sql: z.string().min(1) },
+  { title: "Query database (read-only)", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  async ({ organisation_id, database_id, sql }) => formatResponse(await getApi().queryDatabase(organisation_id, database_id, sql, false))
+);
+
+server.tool(
+  "execute-database-sql",
+  "Run SQL that changes a Light Cloud database (PostgreSQL): INSERT, UPDATE, DELETE, CREATE, ALTER, DROP. Confirm with the user before running anything that deletes or overwrites data. For reads, use query-database.",
+  { organisation_id: orgArg, database_id: z.string(), sql: z.string().min(1) },
+  { title: "Execute database SQL", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  async ({ organisation_id, database_id, sql }) => formatResponse(await getApi().queryDatabase(organisation_id, database_id, sql, true))
 );
 
 server.tool(
@@ -2650,14 +2962,20 @@ server.prompt(
   })
 );
 
+return server;
+}
+
 // Main function to start the server
 async function main() {
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await buildServer().connect(transport);
   console.error("Light Cloud MCP server running on stdio");
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+// src/http.ts imports this module for buildServer and sets LIGHTCLOUD_MCP_REMOTE first: no stdio then
+if (process.env.LIGHTCLOUD_MCP_REMOTE !== "1") {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}

@@ -121,6 +121,18 @@
       "name": "check-repo-access"
     },
     {
+      "name": "get-workspace-overview"
+    },
+    {
+      "name": "get-git-connections"
+    },
+    {
+      "name": "create-repository"
+    },
+    {
+      "name": "commit-files"
+    },
+    {
       "name": "request-upload-url"
     },
     {
@@ -247,6 +259,15 @@
       "name": "create-folder"
     },
     {
+      "name": "rename-folder"
+    },
+    {
+      "name": "move-folder"
+    },
+    {
+      "name": "move-database"
+    },
+    {
       "name": "delete-folder"
     },
     {
@@ -269,6 +290,9 @@
     },
     {
       "name": "query-database"
+    },
+    {
+      "name": "execute-database-sql"
     },
     {
       "name": "dump-database"

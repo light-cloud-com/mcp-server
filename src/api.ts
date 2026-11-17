@@ -292,6 +292,41 @@ export class LightCloudApi {
     });
   }
 
+  /** A new repository in the workspace's connected GitHub, GitLab or Bitbucket account, the files as its first commit. */
+  async createRepository(body: {
+    organisationId: string;
+    name: string;
+    files: Array<{ path: string; content: string; encoding?: "utf8" | "base64" }>;
+    provider?: "github" | "gitlab" | "bitbucket";
+    private?: boolean;
+    message?: string;
+  }): Promise<ApiResponse<unknown>> {
+    return this.client.post("/api/repositories", body);
+  }
+
+  /** A GitHub sign-in link that links (or, with move, moves here) the user's GitHub login. */
+  async getGitHubConnectUrl(move: boolean): Promise<ApiResponse<{ url: string }>> {
+    return this.client.get<{ url: string }>(`/api/auth/github/connect${move ? "?takeover=1" : ""}`);
+  }
+
+  /** Which git accounts this workspace can create repositories in, and whether each is ready. */
+  async getGitConnections(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.get(`/api/repositories/targets?organisationId=${encodeURIComponent(organisationId)}`);
+  }
+
+  /** One commit of changed or deleted files on a repository the workspace's git connection reaches. */
+  async commitFiles(body: {
+    organisationId: string;
+    provider: "github" | "gitlab" | "bitbucket";
+    owner: string;
+    repo: string;
+    branch?: string;
+    files: Array<{ path: string; content?: string; encoding?: "utf8" | "base64"; delete?: boolean }>;
+    message?: string;
+  }): Promise<ApiResponse<unknown>> {
+    return this.client.post("/api/repositories/commit", body);
+  }
+
   async createApplicationFromUpload(request: CreateApplicationFromUploadRequest): Promise<ApiResponse<Application>> {
     return this.client.post<Application>('/api/applications/create-from-upload', {
       ...request,
@@ -491,8 +526,9 @@ export class LightCloudApi {
 
   // ============ GitHub Integration ============
 
-  async getGitHubInstallUrl(): Promise<ApiResponse<{ url: string }>> {
-    return this.client.get<{ url: string }>('/api/github-app/install');
+  /** With organisationId the installation is linked to that workspace when GitHub sends the user back. */
+  async getGitHubInstallUrl(organisationId?: string): Promise<ApiResponse<{ url: string }>> {
+    return this.client.get<{ url: string }>(`/api/github-app/install${organisationId ? `?organisationId=${encodeURIComponent(organisationId)}` : ''}`);
   }
 
   async getGitHubInstallationStatus(
@@ -786,13 +822,24 @@ export class LightCloudApi {
 
   // -- projects (folders) --
   async listProjects(organisationId: string, parentId?: string | null): Promise<ApiResponse<unknown>> {
-    return this.client.post('/api/projects', this.org(organisationId, { page: 1, limit: 100, parentId: parentId ?? undefined }));
+    // the API refuses a list without a sort
+    return this.client.post('/api/projects', this.org(organisationId, { page: 1, limit: 100, sortColumn: 'name', sortOrder: 'asc', parentId: parentId ?? undefined }));
   }
   async createProject(organisationId: string, name: string, parentId?: string | null): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/projects/create', this.org(organisationId, { name, type: 'folder', parentId: parentId ?? undefined }));
   }
   async deleteProject(organisationId: string, projectId: string): Promise<ApiResponse<unknown>> {
     return this.client.post('/api/projects/delete', this.org(organisationId, { projectId }));
+  }
+  async renameProject(organisationId: string, projectId: string, name: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/projects/update', this.org(organisationId, { projectId, name }));
+  }
+  /** Into another folder, or to the workspace root with null. */
+  async moveProject(organisationId: string, projectId: string, targetFolderId: string | null): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/projects/move', this.org(organisationId, { projectId, targetFolderId }));
+  }
+  async moveDatabase(organisationId: string, databaseId: string, targetFolderId: string | null): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/databases/move', this.org(organisationId, { databaseId, targetFolderId }));
   }
 
   // -- stacks --
