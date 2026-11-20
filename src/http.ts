@@ -53,13 +53,26 @@ export const meantForUs = (payload: Record<string, unknown> | null, resource: st
 
 // tokens the API accepted, by hash, until they expire or 15 seconds pass
 const accepted = new Map<string, number>();
-const accept = async (token: string, exp: number): Promise<boolean> => {
+
+/** What the API's answer says about a token: yes, no, or null when it gave none (no answer, 429, 5xx). */
+export const verdict = (res: { ok: boolean; status: number } | null): boolean | null =>
+  !res || res.status === 429 || res.status >= 500 ? null : res.ok;
+
+const accept = async (token: string, exp: number): Promise<boolean | null> => {
   const key = createHash('sha256').update(token).digest('hex');
   const until = accepted.get(key);
   if (until && until > Date.now()) return true;
-  // /api/auth/profile stays open when the user turns Agents & CLI off, so tool calls then get that refusal, not a sign-in prompt
-  const res = await fetch(`${API_URL}/api/auth/profile`, { headers: { Authorization: `Bearer ${token}` } }).catch(() => null);
-  if (!res?.ok) return false;
+  // /api/auth/profile stays open when the user turns Agents & CLI off, so tool calls then get that refusal, not a sign-in prompt.
+  // A check that hangs or fails says nothing about the token: asked once more, then answered as unavailable, never as signed out.
+  let ok: boolean | null = null;
+  for (let attempt = 0; attempt < 2 && ok === null; attempt++) {
+    const res = await fetch(`${API_URL}/api/auth/profile`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => null);
+    ok = verdict(res);
+  }
+  if (!ok) return ok;
   if (accepted.size > 5000) accepted.clear();
   // short, so a disconnect in Settings → Security takes effect within seconds
   accepted.set(key, Math.min(exp, Date.now() + 15_000));
@@ -132,7 +145,16 @@ const handle = (name: ServerName) => async (req: Request, res: Response) => {
   const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
   if (!token) return challenge(res, name);
   const payload = jwtPayload(token);
-  if (!meantForUs(payload, SERVERS[name].resource) || !(await accept(token, Number(payload!.exp) * 1000))) return challenge(res, name, 'invalid_token');
+  if (!meantForUs(payload, SERVERS[name].resource)) return challenge(res, name, 'invalid_token');
+  const ok = await accept(token, Number(payload!.exp) * 1000);
+  if (ok === null) {
+    console.error(`MCP (${name}): no answer from ${API_URL} to the token check`);
+    return res
+      .status(503)
+      .set('Retry-After', '2')
+      .json({ error: 'temporarily_unavailable', error_description: 'Light Cloud did not answer in time. Try again in a moment.' });
+  }
+  if (!ok) return challenge(res, name, 'invalid_token');
 
   // the transport reads rawHeaders
   downgradeProtocolHeader(req.rawHeaders);

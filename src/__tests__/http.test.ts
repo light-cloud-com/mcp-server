@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 process.env.NODE_ENV = 'test';
-const { jwtPayload, meantForUs, originAllowed, downgradeProtocolHeader } = await import('../http.js');
+const { jwtPayload, meantForUs, originAllowed, downgradeProtocolHeader, verdict } = await import('../http.js');
 
 const jwt = (payload: object) => `x.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.sig`;
 const RESOURCE = 'https://mcp.light-cloud.com/mcp';
@@ -25,6 +25,14 @@ describe('remote server', () => {
     expect(meantForUs(jwtPayload(jwt({ aud: 'https://evil.example/mcp', exp })), RESOURCE)).toBe(false);
     expect(meantForUs(jwtPayload(jwt({ aud: RESOURCE, exp: 1 })), RESOURCE)).toBe(false);
     expect(meantForUs(jwtPayload('not-a-jwt'), RESOURCE)).toBe(false);
+  });
+
+  it('reads a failed or missing token check as no answer, not as signed out', () => {
+    expect(verdict({ ok: true, status: 200 })).toBe(true);
+    expect(verdict({ ok: false, status: 401 })).toBe(false);
+    expect(verdict(null)).toBeNull();
+    expect(verdict({ ok: false, status: 429 })).toBeNull();
+    expect(verdict({ ok: false, status: 503 })).toBeNull();
   });
 
   it('lets server-to-server calls and the known apps through, not other browser origins', () => {

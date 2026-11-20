@@ -847,6 +847,66 @@ export class LightCloudApi {
     return this.client.post('/api/stacks/create', this.org(organisationId, { stackId, ...body }));
   }
 
+  /** The repository's file list and the text of chosen files, through the workspace's git connection. */
+  async readRepositoryFiles(organisationId: string, body: { provider: string; owner: string; repo: string; branch?: string; paths?: string[] }): Promise<ApiResponse<unknown>> {
+    // routes/repositories.ts reads `organisationId` (like commit and create), not targetOrganisationId
+    return this.client.post('/api/repositories/read', { organisationId, ...body });
+  }
+
+  // -- AI endpoints --
+  async createAiEndpoint(organisationId: string, body: Record<string, unknown>): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/create', this.org(organisationId, body));
+  }
+
+  async listAiEndpoints(organisationId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints', this.org(organisationId, {}));
+  }
+
+  async connectAiEndpoint(organisationId: string, endpointId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/connect', this.org(organisationId, { endpointId, environmentId }));
+  }
+
+  async moveAiEndpoint(organisationId: string, endpointId: string, targetFolderId: string | null): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/move', this.org(organisationId, { endpointId, targetFolderId }));
+  }
+
+  async getAiEndpoint(organisationId: string, endpointId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/get', this.org(organisationId, { endpointId }));
+  }
+
+  async setAiAgent(organisationId: string, endpointId: string, body: { instructions?: string; guidelines?: string[] }): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/agent/update', this.org(organisationId, { endpointId, ...body }));
+  }
+
+  async addAiAgentData(organisationId: string, endpointId: string, body: Record<string, unknown>): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/sources/add', this.org(organisationId, { endpointId, ...body }));
+  }
+
+  async removeAiAgentData(organisationId: string, endpointId: string, sourceId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/sources/remove', this.org(organisationId, { endpointId, sourceId }));
+  }
+
+  async getAiEndpointUsage(organisationId: string, endpointId: string, days?: number): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/ai-endpoints/usage', this.org(organisationId, { endpointId, days }));
+  }
+
+  // -- scheduled runs (Light Cloud calls the app's URL on a cadence) --
+  async getSchedule(organisationId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/schedules/get', this.org(organisationId, { environmentId }));
+  }
+
+  async setSchedule(organisationId: string, environmentId: string, body: { every?: string; path?: string; enabled?: boolean }): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/schedules/set', this.org(organisationId, { environmentId, ...body }));
+  }
+
+  async runScheduleNow(organisationId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/schedules/run', this.org(organisationId, { environmentId }));
+  }
+
+  async deleteSchedule(organisationId: string, environmentId: string): Promise<ApiResponse<unknown>> {
+    return this.client.post('/api/schedules/delete', this.org(organisationId, { environmentId }));
+  }
+
   // -- templates (the gallery reads need no sign-in) --
   async searchTemplates(search: TemplateSearch = {}): Promise<ApiResponse<unknown>> {
     const params: Record<string, string | number | undefined> = {
