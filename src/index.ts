@@ -2531,18 +2531,18 @@ server.tool(
 
 server.tool(
   "create-ai-endpoint",
-  "Create an AI endpoint: one URL and key that an app sends its AI requests to (OpenAI Chat Completions format). Light Cloud picks the model and vendor and fails over; its spend counts toward the workspace's monthly usage limit like every other resource (there is no separate AI budget). Then connect-ai-endpoint puts it into the app. Default model gemini-2-5-flash (cheap, handles tools). Paid plans only: on Free it is refused with PLAN_ENTITLEMENT, naming the plan that includes it and its price.",
+  "Create an AI endpoint: one URL and key that an app sends its AI requests to (OpenAI Chat Completions format). Light Cloud picks the model and vendor and fails over; its spend counts toward the workspace's monthly usage limit like every other resource (there is no separate AI budget). Then connect-ai-endpoint puts it into the app. Default model gemini-3-flash (fast, cheap, handles tools). Paid plans only: on Free it is refused with PLAN_ENTITLEMENT, naming the plan that includes it and its price.",
   {
     organisation_id: orgArg,
     name: z.string().min(1).max(60),
-    default_model: z.string().optional().describe("Model id; default gemini-2-5-flash"),
+    default_model: z.string().optional().describe("Model id; default gemini-3-flash"),
     region_rule: z.enum(["any", "eu"]).optional(),
     folder_id: z.string().optional(),
   },
   { title: "Create AI endpoint", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async ({ organisation_id, name, default_model, region_rule, folder_id }) =>
     formatResponse(await getApi().createAiEndpoint(organisation_id, {
-      name, defaultModel: default_model ?? "gemini-2-5-flash", regionRule: region_rule ?? "any", mode: "save", projectId: folder_id,
+      name, defaultModel: default_model ?? "gemini-3-flash", regionRule: region_rule ?? "any", mode: "save", projectId: folder_id,
     }))
 );
 
